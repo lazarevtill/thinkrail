@@ -653,7 +653,16 @@ a project picker, the prompt hero, and the reused
   `canApiKey` — **both routes start `provider.loginStart`**
   (`type` `"oauth"` / `"api_key"`, issue #97) into the same store-driven `auth/LoginDialog` (open the
   URL / paste a code / answer the provider's own key prompts, `provider.loginReply` — no inline key
-  field); a "configured outside the app" note for rows with neither flag; and
+  field); a "configured outside the app" note for rows with neither flag; **`LocalModelsSettings`**
+  (v91, hidden below `LOCAL_MODELS_PROTOCOL_VERSION`; re-read on `providerVersion`) — the **Local models**
+  group listing every `localModels.list` endpoint (name, base URL, model count; **Edit** /
+  **Remove** behind a `ConfirmDialog`) and **Add local server**, which opens a dialog: a server-kind
+  segment row (switching kind swaps an untouched name and a still-default URL), name, URL, a password
+  key field (blank keeps a saved key on edit), **Detect models** (`localModels.probe`; detected rows merge
+  with the draft — a row's edited context and selection survive a re-detect, and models the server no
+  longer lists stay until unchecked), and per-model use checkbox, context field (validated with
+  `isLocalModelContextWindow`) and Thinking switch. **Save** sends `localModels.save`; host errors render
+  inline in the dialog, never as raw file contents; and
   the **`JetBrainsAiCard`** — route Central-supported models through the user's JetBrains subscription while
   keeping ThinkRail's embedded PI — a state machine over the typed `JbcentralStatus` +
   `provider.jbcentral*`: absent (official host-OS install guidance + Recheck), outdated — below the host's

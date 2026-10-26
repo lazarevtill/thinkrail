@@ -59,6 +59,10 @@ create the tools it needs based on how you actually work.
   servers next to its background commands and subagents.
 - **Your providers, your credentials.** Sign in with [JetBrains AI](https://www.jetbrains.com/ai/) or
   connect any provider through `pi`'s own auth. ThinkRail has no accounts of its own.
+- **Local models.** Point Settings → Providers → **Local models** at a llama.cpp, vLLM, Ollama, LM Studio
+  or any OpenAI-compatible server: **Detect models** reads what it serves (with the context length the
+  server reports), and the connection is saved to `pi`'s `models.json`, so its models appear in the chat
+  model picker and in the `pi` CLI alike.
 - **Desktop app or browser.** A native desktop app, or the `thinkrail` CLI that opens the same app in your
   browser. Both embed the same engine host; app state lives under `~/.thinkrail`.
 - **Your language.** Settings → Language follows your system language or a language you pick; English and
