@@ -141,20 +141,22 @@ function withEndpointOptions<T extends RequestOptions>(providerId: string, optio
  * the parallel-request limit (a per-request `fetch`), the request timeout and provider retries. Every
  * pi caller — agent turns, subagents, compaction and one-shot completions — dispatches through these.
  */
+const DISPATCH = ["stream", "streamSimple", "complete", "completeSimple"] as const;
+
 export function installRequestLimits(runtime: ModelRuntime): void {
 	const target = runtime as ModelRuntime & { [INSTALLED]?: true };
-	if (target[INSTALLED]) return;
+	if (!Object.isExtensible(target) || target[INSTALLED]) return;
 	target[INSTALLED] = true;
-	const stream = runtime.stream.bind(runtime);
-	const streamSimple = runtime.streamSimple.bind(runtime);
-	const complete = runtime.complete.bind(runtime);
-	const completeSimple = runtime.completeSimple.bind(runtime);
-	runtime.stream = (model, context, options) =>
-		stream(model, context, withEndpointOptions(model.provider, options));
-	runtime.streamSimple = (model, context, options) =>
-		streamSimple(model, context, withEndpointOptions(model.provider, options));
-	runtime.complete = (model, context, options) =>
-		complete(model, context, withEndpointOptions(model.provider, options));
-	runtime.completeSimple = (model, context, options) =>
-		completeSimple(model, context, withEndpointOptions(model.provider, options));
+	const methods = target as unknown as Record<
+		(typeof DISPATCH)[number],
+		| ((model: { provider: string }, context: unknown, options?: RequestOptions) => unknown)
+		| undefined
+	>;
+	for (const name of DISPATCH) {
+		const original = methods[name];
+		if (typeof original !== "function") continue;
+		const bound = original.bind(runtime);
+		methods[name] = (model, context, options) =>
+			bound(model, context, withEndpointOptions(model.provider, options));
+	}
 }
