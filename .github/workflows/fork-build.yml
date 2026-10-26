@@ -1,0 +1,119 @@
+name: Fork build
+
+# Builds the CLI binary and the desktop installer for every supported desktop target and publishes them
+# on the rolling `fork-latest` release. Release identity is stamped without analytics keys, and the
+# desktop update feed points at this repository so a fork build never offers an upstream update.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/local-models]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: bun-windows-x64
+            platform: win-x64
+            installer: win-x64-ThinkRail-Setup.zip
+            asset: thinkrail-desktop-windows-x64.zip
+          - os: ubuntu-24.04
+            target: bun-linux-x64
+            platform: linux-x64
+            installer: linux-x64-ThinkRail-Setup.tar.gz
+            asset: thinkrail-desktop-linux-x64.tar.gz
+          - os: macos-14
+            target: bun-darwin-arm64
+            platform: macos-arm64
+            installer: macos-arm64-ThinkRail.dmg
+            asset: thinkrail-desktop-darwin-arm64.dmg
+    runs-on: ${{ matrix.os }}
+    env:
+      THINKRAIL_RELEASE_BASE_URL: https://github.com/${{ github.repository }}/releases/download/desktop-updates
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+          no-cache: true
+      - run: bun install --frozen-lockfile
+      - name: Install desktop runtime packages
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/desktop-apt
+        timeout-minutes: 10
+      - name: Stamp release identity
+        shell: bash
+        run: |
+          set -eu
+          commit=$(git rev-parse --short HEAD)
+          cat > packages/shared/src/version.ts <<STAMP
+          export const version = "0.0.0-fork.${GITHUB_RUN_NUMBER}";
+          export const channel = "stable";
+          export const commit = "${commit}";
+          export const posthogProjectKey = "";
+          STAMP
+      - run: bun run build:web
+      - name: Compile CLI binary
+        shell: bash
+        run: bun apps/cli/scripts/build-binary.ts --target="${{ matrix.target }}"
+      - name: Package desktop installer
+        shell: bash
+        run: |
+          set -eu
+          if [ "${{ matrix.target }}" = bun-windows-x64 ]; then
+            export PATH="$(cygpath -u "$SYSTEMROOT")/System32:$PATH"
+          fi
+          bun run --cwd apps/desktop package:stable
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          set -eu
+          mkdir -p out
+          cli="apps/cli/dist/thinkrail-${{ matrix.target }}"
+          cli="${cli/thinkrail-bun-/thinkrail-}"
+          [ -f "$cli" ] || cli="${cli}.exe"
+          cp "$cli" out/
+          cp "apps/desktop/artifacts/${{ matrix.installer }}" "out/${{ matrix.asset }}"
+          ls -la out
+      - uses: actions/upload-artifact@v5
+        with:
+          name: thinkrail-${{ matrix.platform }}
+          path: out/*
+          retention-days: 14
+
+  release:
+    name: Publish fork-latest
+    needs: build
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: out
+          merge-multiple: true
+      - name: Publish rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          ls -la out
+          (cd out && sha256sum * > SHA256SUMS)
+          gh release delete fork-latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create fork-latest out/* \
+            --target "$GITHUB_SHA" \
+            --title "ThinkRail fork build (${GITHUB_SHA::7})" \
+            --notes "Built from ${GITHUB_REF_NAME} at ${GITHUB_SHA}. Adds Settings → Providers → Local models (llama.cpp, vLLM, Ollama, LM Studio, OpenAI-compatible)." \
+            --prerelease
