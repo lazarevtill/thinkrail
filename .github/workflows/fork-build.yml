@@ -1,8 +1,10 @@
 name: Fork build
 
 # Builds the CLI binary and the desktop installer for every supported desktop target and publishes them
-# on the rolling `fork-latest` release. Release identity is stamped without analytics keys, and the
-# desktop update feed points at this repository so a fork build never offers an upstream update.
+# on the rolling `fork-latest` release. Release identity is stamped without analytics keys. The desktop
+# update feed points at this repository's `desktop-updates` release, which every run refreshes with
+# Electrobun's update manifests and archives, so installed fork builds update themselves and never
+# offer an upstream update.
 
 on:
   workflow_dispatch:
@@ -86,11 +88,22 @@ jobs:
           [ -f "$cli" ] || cli="${cli}.exe"
           cp "$cli" out/
           cp "apps/desktop/artifacts/${{ matrix.installer }}" "out/${{ matrix.asset }}"
-          ls -la out
+          mkdir -p updates
+          manifest="apps/desktop/artifacts/stable-${{ matrix.platform }}-update.json"
+          [ -f "$manifest" ] || { echo "::error::missing $manifest"; exit 1; }
+          archive=$(bun -e "console.log(JSON.parse(require('fs').readFileSync('$manifest','utf8')).artifact.file)")
+          cp "$manifest" updates/
+          cp "apps/desktop/artifacts/$archive" updates/
+          ls -la out updates
       - uses: actions/upload-artifact@v5
         with:
           name: thinkrail-${{ matrix.platform }}
           path: out/*
+          retention-days: 14
+      - uses: actions/upload-artifact@v5
+        with:
+          name: updates-${{ matrix.platform }}
+          path: updates/*
           retention-days: 14
 
   release:
@@ -101,7 +114,13 @@ jobs:
     steps:
       - uses: actions/download-artifact@v5
         with:
+          pattern: thinkrail-*
           path: out
+          merge-multiple: true
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: updates-*
+          path: updates
           merge-multiple: true
       - name: Publish rolling release
         env:
@@ -117,3 +136,16 @@ jobs:
             --title "ThinkRail fork build (${GITHUB_SHA::7})" \
             --notes "Built from ${GITHUB_REF_NAME} at ${GITHUB_SHA}. Adds Settings → Providers → Local models (llama.cpp, vLLM, Ollama, LM Studio, OpenAI-compatible)." \
             --prerelease
+      - name: Publish desktop update feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          ls -la updates
+          if ! gh release view desktop-updates >/dev/null 2>&1; then
+            gh release create desktop-updates --target "$GITHUB_SHA" --prerelease \
+              --title "Desktop update feed" \
+              --notes "Electrobun update manifests and archives for installed fork builds. Not for manual download."
+          fi
+          gh release upload desktop-updates updates/* --clobber
