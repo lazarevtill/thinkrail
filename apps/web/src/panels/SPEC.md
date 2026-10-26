@@ -655,13 +655,19 @@ a project picker, the prompt hero, and the reused
   URL / paste a code / answer the provider's own key prompts, `provider.loginReply` — no inline key
   field); a "configured outside the app" note for rows with neither flag; **`LocalModelsSettings`**
   (v91, hidden below `LOCAL_MODELS_PROTOCOL_VERSION`; re-read on `providerVersion`) — the **Local models**
-  group listing every `localModels.list` endpoint (name, base URL, model count; **Edit** /
-  **Remove** behind a `ConfirmDialog`) and **Add local server**, which opens a dialog: a server-kind
+  group listing every `localModels.list` endpoint (name, base URL, model count, parallel limit; **Edit** /
+  **Remove** behind a `ConfirmDialog`; one row per saved model with its context / max output and a
+  **Test** button that runs `localModels.test` and shows chat / tool-call / latency / tok/s, the server's
+  error text, and a kind-specific hint for enabling tool calls when the model answered in text) and
+  **Add local server**, which opens a dialog: a server-kind
   segment row (switching kind swaps an untouched name and a still-default URL), name, URL, a password
   key field (blank keeps a saved key on edit), **Detect models** (`localModels.probe`; detected rows merge
   with the draft — a row's edited context and selection survive a re-detect, and models the server no
-  longer lists stay until unchecked), and per-model use checkbox, context field (validated with
-  `isLocalModelContextWindow`) and Thinking switch. **Save** sends `localModels.save`; host errors render
+  longer lists stay until unchecked; an empty parallel field takes the probe's `slots`), a **Parallel
+  requests** field (blank = no limit, else `isLocalConcurrency`), **Timeout (seconds)** and **Retries**
+  fields (blank = pi's defaults, else `isLocalTimeoutSeconds` / `isLocalRetries`), and per-model use checkbox, a `tools`
+  badge when the server reports one, context field (`isLocalModelContextWindow`), max-output field
+  (`isLocalMaxTokens`, defaulted by `defaultLocalMaxTokens`) and Thinking switch. **Save** sends `localModels.save`; host errors render
   inline in the dialog, never as raw file contents; and
   the **`JetBrainsAiCard`** — route Central-supported models through the user's JetBrains subscription while
   keeping ThinkRail's embedded PI — a state machine over the typed `JbcentralStatus` +
