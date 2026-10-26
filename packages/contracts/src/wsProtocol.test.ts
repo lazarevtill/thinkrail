@@ -18,10 +18,15 @@ import {
 	CONTEXT_WINDOW_SETTINGS_PROTOCOL_VERSION,
 	customMessageText,
 	DEFAULT_MODEL_PROTOCOL_VERSION,
+	defaultLocalMaxTokens,
 	EXTENSION_CATALOG_PROTOCOL_VERSION,
 	HOST_UPDATE_RUN_PROTOCOL_VERSION,
 	isBackgroundCommandCompletionMessage,
+	isLocalConcurrency,
+	isLocalMaxTokens,
 	isLocalModelContextWindow,
+	isLocalRetries,
+	isLocalTimeoutSeconds,
 	isTodoReviewFixMessage,
 	JBCENTRAL_QUOTA_PROTOCOL_VERSION,
 	LOCAL_MODELS_PROTOCOL_VERSION,
@@ -287,16 +292,27 @@ test("model context settings name their two methods at v76", () => {
 	expect(PROTOCOL_VERSION).toBeGreaterThanOrEqual(CONTEXT_WINDOW_SETTINGS_PROTOCOL_VERSION);
 });
 
-test("local model endpoints name their four methods at v91", () => {
+test("local model endpoints name their five methods at v91", () => {
 	expect(WS_METHODS.localModelsList).toBe("localModels.list");
 	expect(WS_METHODS.localModelsProbe).toBe("localModels.probe");
 	expect(WS_METHODS.localModelsSave).toBe("localModels.save");
 	expect(WS_METHODS.localModelsRemove).toBe("localModels.remove");
+	expect(WS_METHODS.localModelsTest).toBe("localModels.test");
 	expect(LOCAL_MODELS_PROTOCOL_VERSION).toBe(91);
 	expect(PROTOCOL_VERSION).toBe(91);
 	expect(isLocalModelContextWindow(32_768)).toBe(true);
 	expect(isLocalModelContextWindow(512)).toBe(false);
 	expect(isLocalModelContextWindow(4096.5)).toBe(false);
+	expect(defaultLocalMaxTokens(8_192)).toBe(2_048);
+	expect(defaultLocalMaxTokens(1_000_000)).toBe(16_384);
+	expect(isLocalMaxTokens(4_096, 8_192)).toBe(true);
+	expect(isLocalMaxTokens(16_384, 8_192)).toBe(false);
+	expect(isLocalConcurrency(4)).toBe(true);
+	expect(isLocalConcurrency(0)).toBe(false);
+	expect(isLocalTimeoutSeconds(600)).toBe(true);
+	expect(isLocalTimeoutSeconds(5)).toBe(false);
+	expect(isLocalRetries(0)).toBe(true);
+	expect(isLocalRetries(11)).toBe(false);
 });
 
 test("resource metadata rides the two content reads from v75", () => {
