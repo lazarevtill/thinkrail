@@ -62,7 +62,10 @@ create the tools it needs based on how you actually work.
 - **Local models.** Point Settings → Providers → **Local models** at a llama.cpp, vLLM, Ollama, LM Studio
   or any OpenAI-compatible server: **Detect models** reads what it serves (with the context length the
   server reports), and the connection is saved to `pi`'s `models.json`, so its models appear in the chat
-  model picker and in the `pi` CLI alike.
+  model picker and in the `pi` CLI alike. Set each model's context and max output, cap how many requests
+  ThinkRail sends the server at once (chats, subagents and reviews queue behind the limit), give it its
+  own request timeout and retry count, and **Test** a
+  model to check it answers and makes the tool calls agent chats depend on.
 - **Desktop app or browser.** A native desktop app, or the `thinkrail` CLI that opens the same app in your
   browser. Both embed the same engine host; app state lives under `~/.thinkrail`.
 - **Your language.** Settings → Language follows your system language or a language you pick; English and
