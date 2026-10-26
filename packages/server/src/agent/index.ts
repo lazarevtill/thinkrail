@@ -25,6 +25,12 @@ export {
 	setDisabledExtensionsResolver,
 } from "./extensions";
 export {
+	listLocalEndpoints,
+	probeLocalModels,
+	removeLocalEndpoint,
+	saveLocalEndpoint,
+} from "./localModels";
+export {
 	effectiveMcpServerConfig,
 	mcpEntryFingerprint,
 	mcpPolicyOf,
@@ -53,11 +59,8 @@ export {
 	setMcpLoginPublisher,
 	startMcpProbe,
 } from "./mcpSignIn";
-export {
-	listModelContextSettings,
-	setModelContextPublisher,
-	setModelContextWindow,
-} from "./modelContext";
+export { listModelContextSettings, setModelContextWindow } from "./modelContext";
+export { setModelsFilePublisher } from "./modelsFile";
 export * from "./oneshot";
 export {
 	activatePiRuntimeGeneration,

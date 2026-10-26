@@ -42,6 +42,7 @@ import {
 	isMcpLoginId,
 	isPiSessionId,
 	listAvailableModels,
+	listLocalEndpoints,
 	listModelContextSettings,
 	listProjectAliasSkillNames,
 	listSessionStates,
@@ -52,6 +53,7 @@ import {
 	markWorkspaceUnread,
 	notifyExtUi,
 	nudgeSession,
+	probeLocalModels,
 	projectTrustSummary,
 	promptSession,
 	readBackgroundCommandOutput,
@@ -60,12 +62,14 @@ import {
 	refreshSubagentConcurrency,
 	refreshSubagentTools,
 	reloadSessionResources,
+	removeLocalEndpoint,
 	removeQueuedSession,
 	removeSession,
 	removeWorkspaceSessions,
 	renameSession,
 	replyMcpProbe,
 	resolveExtUi,
+	saveLocalEndpoint,
 	sendReviewFixToSession,
 	setModelContextWindow,
 	setSessionModel,
@@ -1162,6 +1166,10 @@ const handlers: WsHandlers = {
 	"model.setContextWindow": (p) => {
 		return setModelContextWindow(p.target, p.contextWindow);
 	},
+	"localModels.list": () => listLocalEndpoints(),
+	"localModels.probe": (p) => probeLocalModels(p),
+	"localModels.save": (p) => saveLocalEndpoint(p),
+	"localModels.remove": (p) => removeLocalEndpoint(p.id),
 	"model.default": () =>
 		observeSetupRead(
 			() => resolveNewChatModel({}),
