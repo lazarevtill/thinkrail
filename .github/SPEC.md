@@ -257,6 +257,18 @@ suite for an infrequently changing integration; it does not remove existing sign
 or complete no-agent browser gates. New automated coverage stays narrow around application-owned lifecycle
 regressions and the existing public artifact-output contract tests; no dedicated updater CI matrix is required.
 
+## Fork builds
+
+`workflows/fork-build.yml` is for forks, not upstream releases. On a push to its branch (or manually) it
+stamps `0.0.0-fork.<run>` on the stable channel with no analytics key, builds the CLI and the
+`package:stable` desktop installer on Windows x64, Linux x64 and macOS arm64, and republishes the
+rolling `fork-latest` prerelease with `SHA256SUMS`. `THINKRAIL_RELEASE_BASE_URL` points the desktop
+feed (`electrobun.config.ts` `release.baseUrl`, upstream's URL when unset) at the fork's own
+`desktop-updates` release, which the run refreshes with each platform's `stable-<platform>-update.json`
+and the archive it names — archives upload before manifests (name order), so a client never reads a
+manifest whose archive is missing. Installed fork builds therefore update from the fork and never offer
+an upstream build. Builds are unsigned and skip the smoke gates of the native build contract.
+
 ## CLI installation and other automation
 
 Root `install.sh` and `install.ps1` remain CLI-only consumers: validate channel/version identity, resolve the
