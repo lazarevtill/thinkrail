@@ -21,8 +21,10 @@ import {
 	EXTENSION_CATALOG_PROTOCOL_VERSION,
 	HOST_UPDATE_RUN_PROTOCOL_VERSION,
 	isBackgroundCommandCompletionMessage,
+	isLocalModelContextWindow,
 	isTodoReviewFixMessage,
 	JBCENTRAL_QUOTA_PROTOCOL_VERSION,
+	LOCAL_MODELS_PROTOCOL_VERSION,
 	LOCALES_PROTOCOL_VERSION,
 	MCP_PROTOCOL_VERSION,
 	MCP_TOOL_GRANTS_PROTOCOL_VERSION,
@@ -216,8 +218,8 @@ test("local language files and the locale setting are pinned to v89", () => {
 	expect(WS_CHANNELS.localesChanged).toBe("locales.changed");
 });
 
-test("client error reports are pinned to v90", () => {
-	expect(PROTOCOL_VERSION).toBe(90);
+test("client error reports ride from v90", () => {
+	expect(PROTOCOL_VERSION).toBeGreaterThanOrEqual(CLIENT_ERROR_REPORT_PROTOCOL_VERSION);
 	expect(CLIENT_ERROR_REPORT_PROTOCOL_VERSION).toBe(90);
 	expect(WS_METHODS.clientReportError).toBe("client.reportError");
 });
@@ -283,6 +285,18 @@ test("model context settings name their two methods at v76", () => {
 	expect(WS_METHODS.modelSetContextWindow).toBe("model.setContextWindow");
 	expect(CONTEXT_WINDOW_SETTINGS_PROTOCOL_VERSION).toBe(76);
 	expect(PROTOCOL_VERSION).toBeGreaterThanOrEqual(CONTEXT_WINDOW_SETTINGS_PROTOCOL_VERSION);
+});
+
+test("local model endpoints name their four methods at v91", () => {
+	expect(WS_METHODS.localModelsList).toBe("localModels.list");
+	expect(WS_METHODS.localModelsProbe).toBe("localModels.probe");
+	expect(WS_METHODS.localModelsSave).toBe("localModels.save");
+	expect(WS_METHODS.localModelsRemove).toBe("localModels.remove");
+	expect(LOCAL_MODELS_PROTOCOL_VERSION).toBe(91);
+	expect(PROTOCOL_VERSION).toBe(91);
+	expect(isLocalModelContextWindow(32_768)).toBe(true);
+	expect(isLocalModelContextWindow(512)).toBe(false);
+	expect(isLocalModelContextWindow(4096.5)).toBe(false);
 });
 
 test("resource metadata rides the two content reads from v75", () => {
