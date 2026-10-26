@@ -1,7 +1,15 @@
 import {
+	defaultLocalMaxTokens,
+	isLocalConcurrency,
+	isLocalMaxTokens,
 	isLocalModelContextWindow,
+	isLocalRetries,
+	isLocalTimeoutSeconds,
+	LOCAL_MODEL_CONCURRENCY_LIMITS,
 	LOCAL_MODEL_CONTEXT_LIMITS,
+	LOCAL_MODEL_RETRY_LIMITS,
 	LOCAL_MODEL_SERVER_KINDS,
+	LOCAL_MODEL_TIMEOUT_LIMITS,
 	type LocalModelEndpoint,
 	type LocalModelEndpointDraft,
 	type LocalModelEntry,
@@ -9,9 +17,11 @@ import {
 	type LocalModelProbedModel,
 	type LocalModelProbeRequest,
 	type LocalModelServerKind,
+	type LocalModelTestResult,
 } from "@thinkrail/contracts";
 import { applyEdits, getNodeValue, modify, type Node } from "jsonc-parser";
 import { usePiRuntime } from "./agentSessionManager";
+import { readLocalEndpointSettings, writeLocalEndpointSettings } from "./localModelSettings";
 import {
 	MODELS_JSON_FORMATTING,
 	modelsPath,
@@ -135,29 +145,37 @@ export function parseModelList(payload: unknown): LocalModelProbedModel[] {
 			contextWindow: positiveInt(entry.max_model_len) ?? llamaContext(entry),
 			reasoning: false,
 			vision: modalities(entry, "input_modalities").includes("image"),
+			tools: null,
 		});
 	}
 	return models;
 }
 
+/** llama.cpp `/props`: per-slot context, slot count, and what the loaded chat template supports. */
 async function enrichLlamaCpp(
 	root: string,
 	key: string | undefined,
 	models: LocalModelProbedModel[],
-) {
+): Promise<{ models: LocalModelProbedModel[]; slots: number | null }> {
 	const props = await fetchJson(`${root}/props`, key).catch(() => undefined);
-	if (!isObject(props)) return models;
+	if (!isObject(props)) return { models, slots: null };
 	const settings = isObject(props.default_generation_settings)
 		? props.default_generation_settings
 		: {};
 	const context = positiveInt(settings.n_ctx);
 	const reasoning =
 		typeof props.chat_template === "string" && props.chat_template.includes("enable_thinking");
-	return models.map((model) => ({
-		...model,
-		contextWindow: model.contextWindow ?? context,
-		reasoning: model.reasoning || reasoning,
-	}));
+	const caps = isObject(props.chat_template_caps) ? props.chat_template_caps : {};
+	const tools = typeof caps.supports_tools === "boolean" ? caps.supports_tools : null;
+	return {
+		slots: positiveInt(props.total_slots),
+		models: models.map((model) => ({
+			...model,
+			contextWindow: model.contextWindow ?? context,
+			reasoning: model.reasoning || reasoning,
+			tools: model.tools ?? tools,
+		})),
+	};
 }
 
 async function enrichOllama(
@@ -181,6 +199,7 @@ async function enrichOllama(
 				contextWindow: model.contextWindow ?? (contextKey ? positiveInt(info[contextKey]) : null),
 				reasoning: capabilities.includes("thinking"),
 				vision: model.vision || capabilities.includes("vision"),
+				tools: capabilities.length > 0 ? capabilities.includes("tools") : model.tools,
 			};
 		}),
 	);
@@ -208,6 +227,9 @@ async function enrichLmStudio(
 					positiveInt(detail.loaded_context_length) ??
 					positiveInt(detail.max_context_length),
 				vision: model.vision || detail.type === "vlm",
+				tools: Array.isArray(detail.capabilities)
+					? detail.capabilities.includes("tool_use")
+					: model.tools,
 			},
 		];
 	});
@@ -240,11 +262,12 @@ export async function probeLocalModels(request: LocalModelProbeRequest): Promise
 		throw new Error(`Couldn't list models at ${baseUrl}/models (${describeFailure(error)}).`);
 	}
 	let models = parseModelList(listing);
+	let slots: number | null = null;
 	const root = serverRoot(baseUrl);
-	if (request.kind === "llama.cpp") models = await enrichLlamaCpp(root, key, models);
+	if (request.kind === "llama.cpp") ({ models, slots } = await enrichLlamaCpp(root, key, models));
 	else if (request.kind === "ollama") models = await enrichOllama(root, key, models);
 	else if (request.kind === "lmstudio") models = await enrichLmStudio(root, key, models);
-	return { baseUrl, models };
+	return { baseUrl, slots, models };
 }
 
 function providerValue(config: Node, id: string): Json | undefined {
@@ -257,9 +280,11 @@ function providerValue(config: Node, id: string): Json | undefined {
 function toEntry(model: unknown): LocalModelEntry | undefined {
 	if (!isObject(model) || typeof model.id !== "string" || model.id === "") return undefined;
 	const input = Array.isArray(model.input) ? model.input : [];
+	const contextWindow = positiveInt(model.contextWindow) ?? LOCAL_MODEL_CONTEXT_LIMITS.fallback;
 	return {
 		id: model.id,
-		contextWindow: positiveInt(model.contextWindow) ?? LOCAL_MODEL_CONTEXT_LIMITS.fallback,
+		contextWindow,
+		maxTokens: positiveInt(model.maxTokens) ?? defaultLocalMaxTokens(contextWindow),
 		reasoning: model.reasoning === true,
 		vision: input.includes("image"),
 	};
@@ -270,6 +295,7 @@ export function readLocalEndpoints(config: Node | undefined): LocalModelEndpoint
 	if (!config) return [];
 	const root = getNodeValue(config);
 	const providers = isObject(root) && isObject(root.providers) ? root.providers : {};
+	const settings = readLocalEndpointSettings();
 	return Object.entries(providers).flatMap(([id, provider]) => {
 		if (!isObject(provider) || typeof provider.baseUrl !== "string") return [];
 		if (provider.api !== API || !Array.isArray(provider.models)) return [];
@@ -281,6 +307,10 @@ export function readLocalEndpoints(config: Node | undefined): LocalModelEndpoint
 				name: typeof provider.name === "string" && provider.name ? provider.name : id,
 				baseUrl: provider.baseUrl,
 				hasApiKey: apiKey !== undefined && apiKey !== NO_KEY,
+				kind: settings[id]?.kind ?? null,
+				maxConcurrency: settings[id]?.maxConcurrency ?? null,
+				timeoutSeconds: settings[id]?.timeoutSeconds ?? null,
+				maxRetries: settings[id]?.maxRetries ?? null,
 				models,
 			},
 		];
@@ -317,6 +347,18 @@ function validateDraft(draft: LocalModelEndpointDraft): void {
 	if (!LOCAL_MODEL_SERVER_KINDS.includes(draft.kind)) throw new Error("Unknown server kind");
 	if (!draft.name.trim()) throw new Error("Name the server.");
 	if (draft.models.length === 0) throw new Error("Pick at least one model.");
+	if (draft.maxConcurrency !== null && !isLocalConcurrency(draft.maxConcurrency))
+		throw new Error(
+			`Parallel requests must be a whole number between ${LOCAL_MODEL_CONCURRENCY_LIMITS.min} and ${LOCAL_MODEL_CONCURRENCY_LIMITS.max}, or no limit.`,
+		);
+	if (draft.timeoutSeconds !== null && !isLocalTimeoutSeconds(draft.timeoutSeconds))
+		throw new Error(
+			`The timeout must be a whole number of seconds between ${LOCAL_MODEL_TIMEOUT_LIMITS.min} and ${LOCAL_MODEL_TIMEOUT_LIMITS.max}, or pi's default.`,
+		);
+	if (draft.maxRetries !== null && !isLocalRetries(draft.maxRetries))
+		throw new Error(
+			`Retries must be a whole number between ${LOCAL_MODEL_RETRY_LIMITS.min} and ${LOCAL_MODEL_RETRY_LIMITS.max}, or pi's default.`,
+		);
 	const ids = new Set<string>();
 	for (const model of draft.models) {
 		if (!model.id || ids.has(model.id)) throw new Error("Model ids must be unique and non-empty.");
@@ -325,11 +367,11 @@ function validateDraft(draft: LocalModelEndpointDraft): void {
 			throw new Error(
 				`Context windows must be whole numbers between ${LOCAL_MODEL_CONTEXT_LIMITS.min.toLocaleString("en-US")} and ${LOCAL_MODEL_CONTEXT_LIMITS.max.toLocaleString("en-US")} tokens.`,
 			);
+		if (!isLocalMaxTokens(model.maxTokens, model.contextWindow))
+			throw new Error(
+				"Max output must be a whole number of at least 256 tokens and fit the context.",
+			);
 	}
-}
-
-function maxOutputTokens(contextWindow: number): number {
-	return Math.max(1_024, Math.min(16_384, Math.floor(contextWindow / 4)));
 }
 
 function modelConfig(
@@ -346,7 +388,7 @@ function modelConfig(
 		input: model.vision ? ["text", "image"] : ["text"],
 		cost: isObject(previous?.cost) ? previous.cost : ZERO_COST,
 		contextWindow: model.contextWindow,
-		maxTokens: maxOutputTokens(model.contextWindow),
+		maxTokens: model.maxTokens,
 	};
 	if (thinking) {
 		next.thinkingLevelMap = {
@@ -398,15 +440,19 @@ export function buildProviderConfig(
 	};
 }
 
-async function commit(edit: (body: string, config: Node | undefined) => string) {
+async function commit(
+	edit: (body: string, config: Node | undefined) => { body: string; settings: () => void },
+) {
 	return usePiRuntime(async (runtime) => {
 		const path = modelsPath();
 		const source = readModelsSource(path);
 		const config = parseModelsConfig(source);
 		const { bom, body } = splitModelsSource(source);
-		const next = bom + edit(body, config);
+		const result = edit(body, config);
+		const next = bom + result.body;
+		if (next !== source) writeModelsFile(path, next);
+		result.settings();
 		if (next !== source) {
-			writeModelsFile(path, next);
 			await runtime.refresh({ allowNetwork: false });
 			publishModelsFileChange();
 		}
@@ -427,7 +473,16 @@ export function saveLocalEndpoint(draft: LocalModelEndpointDraft): Promise<Local
 				throw new Error("That server is no longer in models.json. Reload and retry.");
 			const id = draft.id ?? newProviderId(draft.name, config);
 			const value = buildProviderConfig(draft, existing);
-			return applyEdits(body, modify(body, ["providers", id], value, MODELS_JSON_FORMATTING));
+			return {
+				body: applyEdits(body, modify(body, ["providers", id], value, MODELS_JSON_FORMATTING)),
+				settings: () =>
+					writeLocalEndpointSettings(id, {
+						kind: draft.kind,
+						...(draft.maxConcurrency === null ? {} : { maxConcurrency: draft.maxConcurrency }),
+						...(draft.timeoutSeconds === null ? {} : { timeoutSeconds: draft.timeoutSeconds }),
+						...(draft.maxRetries === null ? {} : { maxRetries: draft.maxRetries }),
+					}),
+			};
 		}),
 	);
 }
@@ -435,8 +490,93 @@ export function saveLocalEndpoint(draft: LocalModelEndpointDraft): Promise<Local
 export function removeLocalEndpoint(id: string): Promise<LocalModelEndpoint[]> {
 	return serializeModelsWrite(() =>
 		commit((body, config) => {
-			if (!readLocalEndpoints(config).some((endpoint) => endpoint.id === id)) return body;
-			return applyEdits(body, modify(body, ["providers", id], undefined, MODELS_JSON_FORMATTING));
+			if (!readLocalEndpoints(config).some((endpoint) => endpoint.id === id))
+				return { body, settings: () => {} };
+			return {
+				body: applyEdits(body, modify(body, ["providers", id], undefined, MODELS_JSON_FORMATTING)),
+				settings: () => writeLocalEndpointSettings(id, null),
+			};
 		}),
 	);
+}
+
+const TEST_TIMEOUT_MS = 180_000;
+const TEST_TOOL = {
+	name: "get_current_time",
+	description: "Returns the current time in the given IANA timezone.",
+	parameters: {
+		type: "object",
+		properties: { timezone: { type: "string", description: "IANA timezone, e.g. UTC" } },
+		required: ["timezone"],
+		additionalProperties: false,
+	},
+};
+
+function failureText(message: { stopReason: string; errorMessage?: string }): string | null {
+	if (message.stopReason !== "error" && message.stopReason !== "aborted") return null;
+	return message.errorMessage?.trim() || "The request failed without an error message.";
+}
+
+/**
+ * Runs the two requests an agent turn depends on through pi's own dispatch — so models.json compat,
+ * credentials and the endpoint's parallel-request limit all apply — and reports each outcome.
+ */
+export function testLocalModel(id: string, modelId: string): Promise<LocalModelTestResult> {
+	return usePiRuntime(async (runtime) => {
+		await runtime.refresh({ allowNetwork: false });
+		const model = runtime.getAvailableSnapshot().find((m) => m.provider === id && m.id === modelId);
+		if (!model) throw new Error("That model is not available. Save the server and retry.");
+		const saved = readLocalEndpointSettings()[id];
+		const budgetMs =
+			Math.max(TEST_TIMEOUT_MS, (saved?.timeoutSeconds ?? 0) * 1_000) *
+			((saved?.maxRetries ?? 0) + 1);
+		const options = { maxTokens: 256, signal: AbortSignal.timeout(budgetMs) };
+		const started = performance.now();
+		const chat = await runtime.completeSimple(
+			model,
+			{
+				systemPrompt: "You are a connectivity check. Reply with the single word OK.",
+				messages: [{ role: "user", content: "Reply with OK.", timestamp: Date.now() }],
+			},
+			options,
+		);
+		const elapsed = performance.now() - started;
+		const chatFailure = failureText(chat);
+		if (chatFailure)
+			return {
+				chat: "failed",
+				tools: "skipped",
+				latencyMs: Math.round(elapsed),
+				outputTokensPerSecond: null,
+				message: chatFailure,
+			};
+		const seconds = elapsed / 1000;
+		const outputTokensPerSecond =
+			chat.usage.output > 0 && seconds > 0
+				? Math.round((chat.usage.output / seconds) * 10) / 10
+				: null;
+		const agent = await runtime.completeSimple(
+			model,
+			{
+				systemPrompt:
+					"You are an agent with tools. When a tool can answer, call it instead of replying in text.",
+				messages: [
+					{ role: "user", content: "What time is it in UTC? Use the tool.", timestamp: Date.now() },
+				],
+				tools: [TEST_TOOL as never],
+			},
+			options,
+		);
+		const toolFailure = failureText(agent);
+		const called = agent.content.some(
+			(block) => block.type === "toolCall" && block.name === TEST_TOOL.name,
+		);
+		return {
+			chat: "ok",
+			tools: called ? "ok" : "failed",
+			latencyMs: Math.round(elapsed),
+			outputTokensPerSecond,
+			message: toolFailure,
+		};
+	});
 }

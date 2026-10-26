@@ -140,17 +140,40 @@ answer-injection path, and the **restart repair** that keeps re-opened transcrip
     resolve `$NAME`/`${NAME}` from the host env; a `!command` key is never run by a probe. Failures
     surface a short closed reason (`HTTP n`, `timed out`, `connection failed`), never response bodies.
     `listLocalEndpoints` reads every `providers.<id>` with `api: "openai-completions"`, a `baseUrl` and a
-    `models` array, so hand-written entries are listed and editable too. `saveLocalEndpoint` validates the
+    `models` array, so hand-written entries are listed and editable too. llama.cpp's `/props` also yields
+    `total_slots` (the probe's `slots`, prefilled as the parallel limit) and
+    `chat_template_caps.supports_tools`; Ollama's `tools` capability and LM Studio's `tool_use` fill the
+    same per-model `tools` hint (null when the server does not say). `saveLocalEndpoint` validates the
     draft (name, ≥1 unique model, `isLocalModelContextWindow`), allocates `local-<slug>` ids for new
     endpoints, and writes the provider with pi's llama.cpp-provider compat (`supportsStore`/
     `supportsDeveloperRole`/`supportsReasoningEffort`/`supportsStrictMode` false, `max_tokens`), zero cost,
-    `maxTokens` = ¼ context clamped to 1K–16K (vLLM rejects prompt + `max_tokens` over its limit), and —
+    the draft's `maxTokens` (the UI defaults it to the contracts' `defaultLocalMaxTokens`, ¼ context clamped
+    to 1K–16K, because vLLM rejects prompt + `max_tokens` over its limit), and —
     for a thinking model on llama.cpp/vLLM — `thinkingFormat: "qwen-chat-template"` with pi's off/medium
     level map. An edit merges over the previous provider/model objects so hand-added fields survive; an
     omitted `apiKey` keeps the saved one, an empty one writes the `thinkrail-local` placeholder pi needs to
     treat the provider as available. `removeLocalEndpoint` deletes only a listed endpoint. Both writes
     follow `modelContext`'s refresh + `provider.changed` rule, and the key never crosses the wire
-    (`hasApiKey` only).
+    (`hasApiKey` only). What models.json cannot hold — the server `kind` and the parallel-request limit — lives
+    (and the per-endpoint request timeout and provider-retry count) in the sibling `localModelSettings` sidecar (`<dataDir>/local-models.json`, `0o600`, mtime-cached,
+    sanitized on read), written inside the same serialized save after models.json and deleted with the
+    endpoint, so pi never sees an unknown key. `testLocalModel` refreshes, resolves the saved model from
+    the settled snapshot, and sends two `completeSimple` requests through the runtime — a plain reply, then a
+    forced-looking `get_current_time` tool request — so compat, credentials and the parallel limit apply
+    exactly as in an agent turn; it reports `chat`/`tools` (`ok`/`failed`/`skipped`), latency, output
+    tokens/s and pi's `errorMessage` verbatim (the user's own server's text, never file contents).
+  - `requestLimits` — the per-endpoint request options: parallel-request limit, timeout and retries. A
+    saved `timeoutSeconds` / `maxRetries` overrides pi's global `retry.provider.timeoutMs` / `maxRetries`
+    in that provider's request options (pi's own `retryProviderRequest` does the retrying, so each retry
+    is a fresh request that queues for a slot again); unset values leave pi's settings in force. `installRequestLimits` runs once on every
+    runtime the module creates or is configured with and wraps the instance's `stream` / `streamSimple` /
+    `complete` / `completeSimple` to inject a `fetch` into the request options when the provider has a
+    saved `maxConcurrency` (an already-limited `fetch` is not wrapped twice, so nested dispatch cannot
+    deadlock). The limited `fetch` holds a slot of a per-provider counting gate from request start until
+    the response body is fully read, cancelled or errors, and a queued request honours its abort signal.
+    The limit is re-read on every acquire and release, so a saved change applies to the next request
+    without a new generation; every pi caller — agent turns, subagents, compaction, one-shot completions
+    and the agent check — goes through it. `requestLoad` exposes active/queued counts for tests.
   - `agentSessionManager` — sessions keyed by `session.sessionId` (each `Entry` also tracks its
     `workspaceId`), `createSession({ cwd, workspaceId, model?, thinkingLevel? })` → `createAgentSession(...)`
     with a per-session `SessionManager` **and `buildSessionSettings(cwd, projectTrusted)`** (the user's
@@ -824,7 +847,7 @@ answer-injection path, and the **restart repair** that keeps re-opened transcrip
   closed `load-failed` outcome—no manager internals) plus `configurePiRuntime`/factory test seams and the
   pre-bootstrap `configurePiRuntimeGenerationInitializer` composition seam; `listModelContextSettings` /
   `setModelContextWindow` (the `modelContext` adapter); `listLocalEndpoints` / `probeLocalModels` /
-  `saveLocalEndpoint` / `removeLocalEndpoint` (the `localModels` adapter); `setModelsFilePublisher` (their
+  `saveLocalEndpoint` / `removeLocalEndpoint` / `testLocalModel` (the `localModels` adapter); `setModelsFilePublisher` (their
   shared `provider.changed` seam); `piLoginOptions` (pi login options
   carrying the lazily created installation device id, for `auth`);
   `completeOnce`/`pickModel` +

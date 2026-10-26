@@ -6,6 +6,7 @@ import {
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { logger } from "../log";
+import { installRequestLimits } from "./requestLimits";
 
 const log = logger("agent");
 
@@ -61,6 +62,7 @@ export function configurePiRuntime(rt: ModelRuntime | null): void {
 		activeGeneration = null;
 		return;
 	}
+	installRequestLimits(rt);
 	const providerStatus = captureProviderStatus(rt);
 	activeGeneration = Promise.resolve({
 		id: nextGenerationId++,
@@ -204,6 +206,7 @@ async function createGeneration(paths: readonly string[]): Promise<PiRuntimeGene
 	const additionalExtensionPaths = [...new Set(paths)];
 	const excludedSessionExtensionPaths = [...configuredSessionExtensionExclusions];
 	const prepared = await runtimeFactory(additionalExtensionPaths);
+	installRequestLimits(prepared.runtime);
 	return {
 		id: nextGenerationId++,
 		runtime: prepared.runtime,
