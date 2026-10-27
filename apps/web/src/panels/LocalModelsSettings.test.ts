@@ -13,6 +13,10 @@ function endpoint(
 		baseUrl,
 		hasApiKey: false,
 		chatTemplateThinking,
+		kind: "openai-compatible",
+		maxConcurrency: null,
+		timeoutSeconds: null,
+		maxRetries: null,
 		models: [{ id: "m", contextWindow: 8_192, maxTokens: 2_048, reasoning, vision: false }],
 	};
 }

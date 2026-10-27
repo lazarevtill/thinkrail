@@ -219,6 +219,15 @@ apart from the recorded selection. Run the manager's restart regressions on upgr
   ("a usage write pi kept only in memory never cuts the reopened history", "a torn usage append is cut
   back…"). Remove the leaf restore when a failed persist leaves pi's memory and leaf unchanged; remove the
   truncation only when pi also guarantees that a failed append leaves no torn bytes.
+- **Local endpoint request options** — [[submodule-server-agent]], `requestLimits.ts`. Pi has no
+  per-provider concurrency, timeout or retry setting, so `installRequestLimits` wraps each runtime's
+  `stream` / `streamSimple` / `complete` / `completeSimple` and adds `fetch`, `timeoutMs` and
+  `maxRetries` to the request options of a saved local endpoint. It relies on pi passing those options
+  through to the OpenAI SDK and to `retryProviderRequest`, and on every model call going through those
+  four methods. **Removal gate:** a public per-provider request-option or dispatch hook in pi. Re-check
+  that the four methods still exist and that the options still reach the provider; run
+  `localModels.test.ts` (parallel queue, retries/timeout reaching pi, nested dispatch not re-gated, abort
+  and stall release) and `e2e/settings-local-models.spec.ts`.
 - **Probe key interpolation** — [[submodule-server-agent]], `localModels.ts` `resolveProbeKey`. Detect runs
   before an endpoint is saved, and pi does not export `resolveConfigValue`, so a typed key is
   interpolated by a copy of pi's `$VAR` / `${VAR}` / `$$` / `$!` rules. Unlike pi, a typed `!command`

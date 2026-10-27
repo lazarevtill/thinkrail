@@ -1,22 +1,31 @@
 import {
 	RiPencilLine as Pencil,
+	RiPlayLine as Play,
 	RiAddLine as Plus,
 	RiSearchLine as Search,
 	RiDeleteBin6Line as Trash2,
 } from "@remixicon/react";
 import {
 	defaultLocalMaxTokens,
+	isLocalConcurrency,
 	isLocalMaxTokens,
 	isLocalModelContextWindow,
+	isLocalRetries,
+	isLocalTimeoutSeconds,
+	LOCAL_MODEL_CONCURRENCY_LIMITS,
 	LOCAL_MODEL_CONTEXT_LIMITS,
 	LOCAL_MODEL_DEFAULT_URLS,
+	LOCAL_MODEL_RETRY_LIMITS,
 	LOCAL_MODEL_SERVER_KINDS,
+	LOCAL_MODEL_TIMEOUT_LIMITS,
 	LOCAL_MODELS_PROTOCOL_VERSION,
 	type LocalModelEndpoint,
 	type LocalModelEndpointDraft,
 	type LocalModelEntry,
 	type LocalModelProbe,
 	type LocalModelServerKind,
+	type LocalModelTestResult,
+	localModelTestBudgetMs,
 } from "@thinkrail/contracts";
 import type { MessageKey } from "@thinkrail/locales";
 import { localeOf, type Translator, useT } from "@thinkrail/locales/react";
@@ -37,6 +46,8 @@ import { errorText, getTransport } from "@/transport";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { SettingsGroup } from "./SettingsGroup";
 import { SettingsSwitch } from "./SettingsSwitch";
+
+const TEST_REPLY_MARGIN_MS = 15_000;
 
 const INPUT_CLASS =
 	"w-full min-w-0 rounded-sm border border-control-border-default bg-control-bg px-8 py-4 tr-text-ui text-text-default outline-none placeholder:text-text-muted focus-visible:border-control-border-active disabled:border-control-disabled-border disabled:bg-control-disabled-bg disabled:text-control-disabled-text";
@@ -76,6 +87,9 @@ interface Draft {
 	hasSavedKey: boolean;
 	removeKey: boolean;
 	savedBaseUrl: string | null;
+	concurrencyText: string;
+	timeoutText: string;
+	retriesText: string;
 	models: ModelRow[];
 }
 
@@ -93,6 +107,9 @@ function newDraft(t: Translator): Draft {
 		hasSavedKey: false,
 		removeKey: false,
 		savedBaseUrl: null,
+		concurrencyText: "",
+		timeoutText: "",
+		retriesText: "",
 		models: [],
 	};
 }
@@ -129,7 +146,7 @@ export function guessKind(endpoint: LocalModelEndpoint): LocalModelServerKind {
 function editDraft(endpoint: LocalModelEndpoint): Draft {
 	return {
 		id: endpoint.id,
-		kind: guessKind(endpoint),
+		kind: endpoint.kind,
 		name: endpoint.name,
 		nameTouched: true,
 		baseUrl: endpoint.baseUrl,
@@ -137,6 +154,9 @@ function editDraft(endpoint: LocalModelEndpoint): Draft {
 		hasSavedKey: endpoint.hasApiKey,
 		removeKey: false,
 		savedBaseUrl: endpoint.baseUrl,
+		concurrencyText: endpoint.maxConcurrency === null ? "" : String(endpoint.maxConcurrency),
+		timeoutText: endpoint.timeoutSeconds === null ? "" : String(endpoint.timeoutSeconds),
+		retriesText: endpoint.maxRetries === null ? "" : String(endpoint.maxRetries),
 		models: endpoint.models.map((model) => ({
 			...model,
 			selected: true,
@@ -161,6 +181,10 @@ function rowIssue(model: ModelRow): "context" | "output" | null {
 	const output = wholeNumber(model.maxTokensText);
 	if (output === null || !isLocalMaxTokens(output, context)) return "output";
 	return null;
+}
+
+function optionalValid(text: string, valid: (value: unknown) => boolean): boolean {
+	return text.trim() === "" || valid(wholeNumber(text));
 }
 
 function mergeProbe(current: Draft, probe: LocalModelProbe): Draft {
@@ -190,7 +214,11 @@ function mergeProbe(current: Draft, probe: LocalModelProbe): Draft {
 		(model) => !probe.models.some((found) => found.id === model.id),
 	);
 	const baseUrl = current.baseUrl === current.savedBaseUrl ? current.baseUrl : probe.baseUrl;
-	return { ...current, baseUrl, models: [...fresh, ...missing] };
+	const concurrencyText =
+		current.concurrencyText === "" && probe.slots !== null
+			? String(probe.slots)
+			: current.concurrencyText;
+	return { ...current, baseUrl, concurrencyText, models: [...fresh, ...missing] };
 }
 
 function ToolsBadge({ tools }: { tools: boolean | null }) {
@@ -231,7 +259,11 @@ function LocalServerDialog({
 	const contextInvalid = issues.includes("context");
 	const outputInvalid = issues.includes("output");
 	const contextGuessed = selected.some((model) => model.contextGuessed);
-	const invalid = contextInvalid || outputInvalid;
+	const parallelInvalid = !optionalValid(draft.concurrencyText, isLocalConcurrency);
+	const timeoutInvalid = !optionalValid(draft.timeoutText, isLocalTimeoutSeconds);
+	const retriesInvalid = !optionalValid(draft.retriesText, isLocalRetries);
+	const invalid =
+		contextInvalid || outputInvalid || parallelInvalid || timeoutInvalid || retriesInvalid;
 	const range = `${tokens(t, LOCAL_MODEL_CONTEXT_LIMITS.min)}–${tokens(t, LOCAL_MODEL_CONTEXT_LIMITS.max)}`;
 
 	const setKind = (kind: LocalModelServerKind) =>
@@ -286,6 +318,9 @@ function LocalServerDialog({
 				: draft.apiKey.trim() || !draft.id
 					? { apiKey: draft.apiKey }
 					: {}),
+			maxConcurrency: wholeNumber(draft.concurrencyText),
+			timeoutSeconds: wholeNumber(draft.timeoutText),
+			maxRetries: wholeNumber(draft.retriesText),
 			models: selected.map((model) => ({
 				id: model.id,
 				contextWindow: Number(model.contextText.trim()),
@@ -400,6 +435,66 @@ function LocalServerDialog({
 							{t("settings.localModels.apiKeyRemove")}
 						</label>
 					) : null}
+					<div className="flex flex-wrap gap-12">
+						<label className="flex w-160 flex-col gap-4" htmlFor={`${id}-parallel`}>
+							<span className="tr-text-metadata text-text-muted">
+								{t("settings.localModels.parallel")}
+							</span>
+							<input
+								id={`${id}-parallel`}
+								data-testid="local-models-parallel"
+								inputMode="numeric"
+								className={cn(INPUT_CLASS, parallelInvalid && "border-feedback-error")}
+								value={draft.concurrencyText}
+								disabled={busy}
+								aria-invalid={parallelInvalid}
+								placeholder={t("settings.localModels.parallelNoLimit")}
+								onChange={(event) =>
+									setDraft({ ...draft, concurrencyText: event.currentTarget.value })
+								}
+							/>
+						</label>
+					</div>
+					<div className="flex flex-wrap gap-12">
+						<label className="flex w-160 flex-col gap-4" htmlFor={`${id}-timeout`}>
+							<span className="tr-text-metadata text-text-muted">
+								{t("settings.localModels.timeout")}
+							</span>
+							<input
+								id={`${id}-timeout`}
+								data-testid="local-models-timeout"
+								inputMode="numeric"
+								className={cn(INPUT_CLASS, timeoutInvalid && "border-feedback-error")}
+								value={draft.timeoutText}
+								disabled={busy}
+								aria-invalid={timeoutInvalid}
+								placeholder={t("settings.localModels.piDefault")}
+								onChange={(event) => setDraft({ ...draft, timeoutText: event.currentTarget.value })}
+							/>
+						</label>
+						<label className="flex w-160 flex-col gap-4" htmlFor={`${id}-retries`}>
+							<span className="tr-text-metadata text-text-muted">
+								{t("settings.localModels.retries")}
+							</span>
+							<input
+								id={`${id}-retries`}
+								data-testid="local-models-retries"
+								inputMode="numeric"
+								className={cn(INPUT_CLASS, retriesInvalid && "border-feedback-error")}
+								value={draft.retriesText}
+								disabled={busy}
+								aria-invalid={retriesInvalid}
+								placeholder={t("settings.localModels.piDefault")}
+								onChange={(event) => setDraft({ ...draft, retriesText: event.currentTarget.value })}
+							/>
+						</label>
+					</div>
+					<p className="tr-text-metadata text-text-muted">
+						{t("settings.localModels.parallelHint")}
+					</p>
+					<p className="tr-text-metadata text-text-muted">
+						{t("settings.localModels.timeoutHint")}
+					</p>
 					<div className="flex flex-wrap items-center justify-between gap-8">
 						<span className="tr-text-ui text-text-default">{t("settings.localModels.models")}</span>
 						<Button
@@ -532,6 +627,30 @@ function LocalServerDialog({
 							{t("settings.localModels.outputInvalid")}
 						</p>
 					) : null}
+					{timeoutInvalid ? (
+						<p className="tr-text-metadata text-feedback-error">
+							{t("settings.localModels.timeoutInvalid", {
+								min: LOCAL_MODEL_TIMEOUT_LIMITS.min,
+								max: LOCAL_MODEL_TIMEOUT_LIMITS.max,
+							})}
+						</p>
+					) : null}
+					{retriesInvalid ? (
+						<p className="tr-text-metadata text-feedback-error">
+							{t("settings.localModels.retriesInvalid", {
+								min: LOCAL_MODEL_RETRY_LIMITS.min,
+								max: LOCAL_MODEL_RETRY_LIMITS.max,
+							})}
+						</p>
+					) : null}
+					{parallelInvalid ? (
+						<p className="tr-text-metadata text-feedback-error">
+							{t("settings.localModels.parallelInvalid", {
+								min: LOCAL_MODEL_CONCURRENCY_LIMITS.min,
+								max: LOCAL_MODEL_CONCURRENCY_LIMITS.max,
+							})}
+						</p>
+					) : null}
 					{selected.some((model) => model.tools === false) ? (
 						<p className="tr-text-metadata text-feedback-error">{t(TOOLS_HINT[draft.kind])}</p>
 					) : null}
@@ -563,23 +682,101 @@ function LocalServerDialog({
 	);
 }
 
-function SavedModelRow({ model }: { model: LocalModelEntry }) {
+type TestState =
+	| { running: true }
+	| { running: false; result: LocalModelTestResult | null; error: string | null };
+
+function testSummary(t: Translator, result: LocalModelTestResult): string {
+	if (result.chat === "skipped") return t("settings.localModels.test.busy");
+	const parts = [
+		result.chat === "ok"
+			? t("settings.localModels.test.chatOk")
+			: t("settings.localModels.test.chatFailed"),
+	];
+	if (result.tools === "ok") parts.push(t("settings.localModels.test.toolsOk"));
+	else if (result.tools === "failed") parts.push(t("settings.localModels.test.toolsFailed"));
+	if (result.latencyMs !== null)
+		parts.push(
+			t("settings.localModels.test.latency", { seconds: (result.latencyMs / 1000).toFixed(1) }),
+		);
+	if (result.outputTokensPerSecond !== null)
+		parts.push(t("settings.localModels.test.speed", { rate: result.outputTokensPerSecond }));
+	return parts.join(" · ");
+}
+
+function ModelTestRow({
+	endpoint,
+	model,
+	state,
+	onTest,
+}: {
+	endpoint: LocalModelEndpoint;
+	model: LocalModelEntry;
+	state: TestState | undefined;
+	onTest: () => void;
+}) {
 	const t = useT();
+	const result = state && !state.running ? state.result : null;
+	const failure = state && !state.running ? state.error : null;
+	const healthy = result?.chat === "ok" && result.tools === "ok";
+	const skipped = result?.chat === "skipped";
 	return (
 		<li
 			data-testid="local-models-model"
 			data-model={model.id}
-			className="flex items-center gap-8 py-4 pl-12"
+			data-test-state={
+				state ? (state.running ? "running" : healthy ? "ok" : skipped ? "busy" : "failed") : "idle"
+			}
+			className="flex flex-col gap-2 py-4 pl-12"
 		>
-			<span className="min-w-0 flex-1 truncate tr-text-metadata text-text-default" title={model.id}>
-				{model.id}
-			</span>
-			<span className="shrink-0 tr-text-metadata text-text-muted">
-				{t("settings.localModels.modelSummary", {
-					window: tokens(t, model.contextWindow),
-					output: tokens(t, model.maxTokens),
-				})}
-			</span>
+			<div className="flex items-center gap-8">
+				<span
+					className="min-w-0 flex-1 truncate tr-text-metadata text-text-default"
+					title={model.id}
+				>
+					{model.id}
+				</span>
+				<span className="shrink-0 tr-text-metadata text-text-muted">
+					{t("settings.localModels.modelSummary", {
+						window: tokens(t, model.contextWindow),
+						output: tokens(t, model.maxTokens),
+					})}
+				</span>
+				<Button
+					variant="ghost"
+					size="s"
+					data-testid="local-models-test"
+					disabled={state?.running === true}
+					aria-label={t("settings.localModels.test.label", { name: model.id })}
+					onClick={onTest}
+				>
+					<Play className="size-14" />
+					{state?.running
+						? t("settings.localModels.test.running")
+						: t("settings.localModels.test.run")}
+				</Button>
+			</div>
+			{result ? (
+				<p
+					data-testid="local-models-test-result"
+					className={cn(
+						"tr-text-metadata",
+						healthy || skipped ? "text-text-muted" : "text-feedback-error",
+					)}
+				>
+					{testSummary(t, result)}
+				</p>
+			) : null}
+			{result && result.chat === "ok" && result.tools === "failed" ? (
+				<p className="tr-text-metadata text-text-muted">
+					{t(TOOLS_HINT[endpoint.kind ?? "openai-compatible"])}
+				</p>
+			) : null}
+			{result?.message || failure ? (
+				<p className="break-words tr-text-metadata text-feedback-error">
+					{result?.message ?? failure}
+				</p>
+			) : null}
 		</li>
 	);
 }
@@ -592,6 +789,7 @@ export function LocalModelsSettings() {
 	const [failed, setFailed] = useState(false);
 	const [dialog, setDialog] = useState<Draft | null>(null);
 	const [removing, setRemoving] = useState<LocalModelEndpoint | null>(null);
+	const [tests, setTests] = useState<Record<string, TestState>>({});
 	const sequence = useRef(0);
 
 	const load = useCallback(async () => {
@@ -621,6 +819,20 @@ export function LocalModelsSettings() {
 		} catch {
 			toast.error(t("settings.localModels.removeFailed"));
 		}
+	};
+
+	const runTest = async (endpoint: LocalModelEndpoint, model: LocalModelEntry) => {
+		const key = `${endpoint.id}/${model.id}`;
+		setTests((current) => ({ ...current, [key]: { running: true } }));
+		const settle = (next: TestState) => setTests((current) => ({ ...current, [key]: next }));
+		await getTransport()
+			.request(
+				"localModels.test",
+				{ id: endpoint.id, modelId: model.id },
+				{ timeoutMs: localModelTestBudgetMs(endpoint) + TEST_REPLY_MARGIN_MS },
+			)
+			.then((result) => settle({ running: false, result, error: null }))
+			.catch((err: unknown) => settle({ running: false, result: null, error: errorText(err) }));
 	};
 
 	return (
@@ -655,6 +867,18 @@ export function LocalModelsSettings() {
 										url: endpoint.baseUrl,
 										count: endpoint.models.length,
 									})}
+									{" · "}
+									{endpoint.maxConcurrency === null
+										? t("settings.localModels.parallelUnlimited")
+										: t("settings.localModels.parallelSummary", {
+												count: endpoint.maxConcurrency,
+											})}
+									{endpoint.timeoutSeconds === null
+										? null
+										: ` · ${t("settings.localModels.timeoutSummary", { seconds: endpoint.timeoutSeconds })}`}
+									{endpoint.maxRetries === null
+										? null
+										: ` · ${t("settings.localModels.retriesSummary", { count: endpoint.maxRetries })}`}
 								</span>
 							</div>
 							<Button
@@ -680,7 +904,13 @@ export function LocalModelsSettings() {
 						</div>
 						<ul className="flex flex-col">
 							{endpoint.models.map((model) => (
-								<SavedModelRow key={model.id} model={model} />
+								<ModelTestRow
+									key={model.id}
+									endpoint={endpoint}
+									model={model}
+									state={tests[`${endpoint.id}/${model.id}`]}
+									onTest={() => void runTest(endpoint, model)}
+								/>
 							))}
 						</ul>
 					</div>

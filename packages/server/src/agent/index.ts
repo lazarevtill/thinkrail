@@ -29,6 +29,7 @@ export {
 	probeLocalModels,
 	removeLocalEndpoint,
 	saveLocalEndpoint,
+	testLocalModel,
 } from "./localModels";
 export {
 	effectiveMcpServerConfig,

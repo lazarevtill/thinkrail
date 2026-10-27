@@ -630,23 +630,29 @@ default, narrow cross-ring guards, and the quit-confirmation rule both clients d
   only settings **`isSharedModelContextTarget`** accepts (no override, or one inside the range): an
   override the app could not have written is changed only by naming its `{provider,id}`. Saves emit the
   existing `provider.changed` invalidation; no AppConfig state or raw configuration crosses the wire) /
-  **`localModels.list`** / **`localModels.probe`** / **`localModels.save`** / **`localModels.remove`**
+  **`localModels.list`** / **`localModels.probe`** / **`localModels.save`** / **`localModels.remove`** /
+  **`localModels.test`**
   (v99, `LOCAL_MODELS_PROTOCOL_VERSION`; local and self-hosted OpenAI chat-completions servers stored as
-  pi `models.json` providers with `local-*` ids. `LocalModelServerKind` is closed
-  (`LOCAL_MODEL_SERVER_KINDS`: llama.cpp, vLLM, Ollama, LM Studio, generic OpenAI-compatible) with
-  per-kind `LOCAL_MODEL_DEFAULT_URLS`; the kind is a form-only input to probes and saves and is not
-  stored. Probing takes `{kind, baseUrl, apiKey? | endpointId?}` (an `endpointId` without `apiKey` reuses
-  that endpoint's saved key host-side, only for its own unchanged URL) and returns the normalized
-  `baseUrl` plus `LocalModelProbedModel`s whose `contextWindow` is `null` when the server reports no
-  running context, with a per-model `tools` hint. Saves take a `LocalModelEndpointDraft` (absent `id` =
-  add; absent `apiKey` = keep, `""` = clear) whose context windows must pass
+  pi `models.json` providers. `LocalModelServerKind` is closed (`LOCAL_MODEL_SERVER_KINDS`: llama.cpp,
+  vLLM, Ollama, LM Studio, generic OpenAI-compatible) with per-kind `LOCAL_MODEL_DEFAULT_URLS`; probing
+  takes `{kind, baseUrl, apiKey? | endpointId?}` (an `endpointId` without `apiKey` reuses that endpoint's
+  saved key host-side) and returns the normalized `baseUrl` plus `LocalModelProbedModel`s whose
+  `contextWindow` is `null` when the server reports none. Saves take a `LocalModelEndpointDraft` (absent
+  `id` = add; absent `apiKey` = keep, `""` = clear) whose context windows must pass
   **`isLocalModelContextWindow`** (`LOCAL_MODEL_CONTEXT_LIMITS`, 1,024–10,000,000; `fallback` 32,768 for
   servers that report nothing) and whose `maxTokens` must pass **`isLocalMaxTokens`**
-  (`LOCAL_MODEL_OUTPUT_LIMITS`, 256–1,000,000 and ≤ the context; `defaultLocalMaxTokens` is the shared default).
-  Every list/save/remove returns `LocalModelEndpoint[]` (`id`, `name`, `baseUrl`, `hasApiKey` rather
-  than the key, `chatTemplateThinking` for guessing the form-only kind on edit, and the effective model
-  entries); saves and removals that change `models.json` emit
-  `provider.changed`) /
+  (`LOCAL_MODEL_OUTPUT_LIMITS`, ≥256 and ≤ the context; `defaultLocalMaxTokens` is the shared default).
+  `maxConcurrency` is null (no limit) or passes **`isLocalConcurrency`** (`LOCAL_MODEL_CONCURRENCY_LIMITS`,
+  1–256); `timeoutSeconds` (`isLocalTimeoutSeconds`, `LOCAL_MODEL_TIMEOUT_LIMITS` 10–3,600) and
+  `maxRetries` (`isLocalRetries`, `LOCAL_MODEL_RETRY_LIMITS` 0–10) are null for pi's defaults. The probe adds `slots` (server-reported parallel slots) and a per-model `tools` hint. Every
+  list/save/remove returns `LocalModelEndpoint[]`, which carries `hasApiKey` rather than the key plus the
+  saved `kind` (never null — only endpoints ThinkRail created are listed), `maxConcurrency`,
+  `timeoutSeconds` and `maxRetries`; saves that change anything and removals emit `provider.changed`. `localModels.test`
+  `{id, modelId}` returns a `LocalModelTestResult` within `localModelTestBudgetMs(endpoint)` (the
+  larger of 180 s and the endpoint timeout, times its attempts — the host's abort budget, which a client's
+  request timeout must exceed) — `chat`/`tools` as `LocalModelCheck` (`skipped` on both when every
+  slot of the endpoint is busy, so nothing was sent), latency, output
+  tokens/s, and the provider's error text) /
   **`model.clampThinking`** (pi's
   `clampThinkingLevel` for a `{model, level}` pair — the pre-session picker's effort adjustment, so no
   client re-derives pi's policy) / **`provider.status`**

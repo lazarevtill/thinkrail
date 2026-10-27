@@ -25,13 +25,17 @@ import {
 	HOST_ENVIRONMENT_PROTOCOL_VERSION,
 	HOST_UPDATE_RUN_PROTOCOL_VERSION,
 	isBackgroundCommandCompletionMessage,
+	isLocalConcurrency,
 	isLocalMaxTokens,
 	isLocalModelContextWindow,
+	isLocalRetries,
+	isLocalTimeoutSeconds,
 	isTodoReviewFixMessage,
 	isToolResponsePending,
 	JBCENTRAL_QUOTA_PROTOCOL_VERSION,
 	LOCAL_MODELS_PROTOCOL_VERSION,
 	LOCALES_PROTOCOL_VERSION,
+	localModelTestBudgetMs,
 	MCP_PROTOCOL_VERSION,
 	MCP_TOOL_GRANTS_PROTOCOL_VERSION,
 	MODEL_PICKER_PROTOCOL_VERSION,
@@ -343,11 +347,12 @@ test("model context settings name their two methods at v76", () => {
 	expect(PROTOCOL_VERSION).toBeGreaterThanOrEqual(CONTEXT_WINDOW_SETTINGS_PROTOCOL_VERSION);
 });
 
-test("local model endpoints name their four methods at v99", () => {
+test("local model endpoints name their five methods at v99", () => {
 	expect(WS_METHODS.localModelsList).toBe("localModels.list");
 	expect(WS_METHODS.localModelsProbe).toBe("localModels.probe");
 	expect(WS_METHODS.localModelsSave).toBe("localModels.save");
 	expect(WS_METHODS.localModelsRemove).toBe("localModels.remove");
+	expect(WS_METHODS.localModelsTest).toBe("localModels.test");
 	expect(LOCAL_MODELS_PROTOCOL_VERSION).toBe(99);
 	expect(PROTOCOL_VERSION).toBe(99);
 	expect(isLocalModelContextWindow(32_768)).toBe(true);
@@ -358,6 +363,14 @@ test("local model endpoints name their four methods at v99", () => {
 	expect(defaultLocalMaxTokens(1_000_000)).toBe(16_384);
 	expect(isLocalMaxTokens(4_096, 8_192)).toBe(true);
 	expect(isLocalMaxTokens(16_384, 8_192)).toBe(false);
+	expect(isLocalConcurrency(4)).toBe(true);
+	expect(isLocalConcurrency(0)).toBe(false);
+	expect(isLocalTimeoutSeconds(600)).toBe(true);
+	expect(isLocalTimeoutSeconds(5)).toBe(false);
+	expect(isLocalRetries(0)).toBe(true);
+	expect(isLocalRetries(11)).toBe(false);
+	expect(localModelTestBudgetMs({ timeoutSeconds: null, maxRetries: null })).toBe(180_000);
+	expect(localModelTestBudgetMs({ timeoutSeconds: 600, maxRetries: 2 })).toBe(1_800_000);
 });
 
 test("resource metadata rides the two content reads from v75", () => {

@@ -49,6 +49,38 @@ test.beforeAll(async () => {
 				chatRequests.push(parsed);
 				const base = { id: "c1", object: "chat.completion.chunk", created: 1, model: MODEL };
 				response.setHeader("content-type", "text/event-stream");
+				if (
+					Array.isArray(parsed.tools) &&
+					parsed.tools.some(
+						(tool: { function?: { name?: string } }) => tool.function?.name === "get_current_time",
+					)
+				) {
+					response.end(
+						sse([
+							{
+								...base,
+								choices: [
+									{
+										index: 0,
+										delta: {
+											role: "assistant",
+											tool_calls: [
+												{
+													index: 0,
+													id: "call_1",
+													type: "function",
+													function: { name: "get_current_time", arguments: '{"timezone":"UTC"}' },
+												},
+											],
+										},
+									},
+								],
+							},
+							{ ...base, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
+						]),
+					);
+					return;
+				}
 				response.end(
 					sse([
 						{ ...base, choices: [{ index: 0, delta: { role: "assistant", content: REPLY } }] },
@@ -78,7 +110,7 @@ test.afterAll(async () => {
 	await new Promise<void>((resolve) => server.close(() => resolve()));
 });
 
-test("a local vLLM server is detected, saved to models.json, edited, chatted with, and removed", async ({
+test("a local vLLM server is detected, saved to models.json, chatted with, and removed", async ({
 	page,
 }) => {
 	writeFileSync(modelsPath, JSON.stringify({ providers: {} }));
@@ -108,6 +140,9 @@ test("a local vLLM server is detected, saved to models.json, edited, chatted wit
 	await dialog.getByTestId("local-models-detect").click();
 	await expect(dialog.getByTestId("local-models-detect")).toBeEnabled();
 	await expect(row.getByTestId("local-models-output")).toHaveValue("8192");
+	await dialog.getByTestId("local-models-parallel").fill("2");
+	await dialog.getByTestId("local-models-timeout").fill("600");
+	await dialog.getByTestId("local-models-retries").fill("3");
 	await dialog.getByTestId("local-models-save").click();
 	await expect(dialog).toHaveCount(0);
 
@@ -115,19 +150,12 @@ test("a local vLLM server is detected, saved to models.json, edited, chatted wit
 		'[data-testid="local-models-endpoint"][data-endpoint="local-vllm"]',
 	);
 	await expect(endpoint).toContainText(`${baseUrl}/v1`);
-	await expect(
-		endpoint.locator(`[data-testid="local-models-model"][data-model="${MODEL}"]`),
-	).toBeVisible();
+	await expect(endpoint).toContainText("2 requests at a time · 600 s timeout · 3 retries");
 
-	await endpoint.getByTestId("local-models-edit").click();
-	await expect(dialog.getByTestId("local-models-url")).toHaveValue(`${baseUrl}/v1`);
-	await expect(
-		dialog.locator(
-			`[data-testid="local-models-row"][data-model="${MODEL}"] [data-testid="local-models-output"]`,
-		),
-	).toHaveValue("8192");
-	await dialog.getByTestId("local-models-save").click();
-	await expect(dialog).toHaveCount(0);
+	const tested = endpoint.locator(`[data-testid="local-models-model"][data-model="${MODEL}"]`);
+	await tested.getByTestId("local-models-test").click();
+	await expect(tested).toHaveAttribute("data-test-state", "ok", { timeout: 30_000 });
+	await expect(tested.getByTestId("local-models-test-result")).toContainText("Tool calls OK");
 	const saved = JSON.parse(readFileSync(modelsPath, "utf8"));
 	expect(saved.providers["local-vllm"]).toMatchObject({
 		api: "openai-completions",

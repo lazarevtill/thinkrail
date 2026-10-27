@@ -339,6 +339,7 @@ export const WS_METHODS = {
 	localModelsProbe: "localModels.probe",
 	localModelsSave: "localModels.save",
 	localModelsRemove: "localModels.remove",
+	localModelsTest: "localModels.test",
 	modelClampThinking: "model.clampThinking",
 	providerStatus: "provider.status",
 	providerDetect: "provider.detect",
@@ -625,6 +626,46 @@ export const LOCAL_MODEL_CONTEXT_LIMITS = {
 /** Output-token budget per request. */
 export const LOCAL_MODEL_OUTPUT_LIMITS = { min: 256, max: 1_000_000 } as const;
 
+/** Simultaneous requests ThinkRail sends one endpoint; more wait in a queue. */
+export const LOCAL_MODEL_CONCURRENCY_LIMITS = { min: 1, max: 256 } as const;
+
+/** Per-request timeout in seconds for one endpoint (model loads and long prefills need headroom). */
+export const LOCAL_MODEL_TIMEOUT_LIMITS = { min: 10, max: 3_600 } as const;
+
+/** Provider-level retries of a failed request (connection errors, 408/409/429/5xx). */
+export const LOCAL_MODEL_RETRY_LIMITS = { min: 0, max: 10 } as const;
+
+export const LOCAL_MODEL_TEST_MIN_BUDGET_MS = 180_000;
+
+/** The longest `localModels.test` may take on the host; clients wait at least this long for its reply. */
+export function localModelTestBudgetMs(
+	endpoint: Pick<LocalModelEndpoint, "timeoutSeconds" | "maxRetries">,
+): number {
+	const perAttempt = Math.max(
+		LOCAL_MODEL_TEST_MIN_BUDGET_MS,
+		(endpoint.timeoutSeconds ?? 0) * 1_000,
+	);
+	return perAttempt * ((endpoint.maxRetries ?? 0) + 1);
+}
+
+export function isLocalTimeoutSeconds(value: unknown): value is number {
+	return (
+		typeof value === "number" &&
+		Number.isSafeInteger(value) &&
+		value >= LOCAL_MODEL_TIMEOUT_LIMITS.min &&
+		value <= LOCAL_MODEL_TIMEOUT_LIMITS.max
+	);
+}
+
+export function isLocalRetries(value: unknown): value is number {
+	return (
+		typeof value === "number" &&
+		Number.isSafeInteger(value) &&
+		value >= LOCAL_MODEL_RETRY_LIMITS.min &&
+		value <= LOCAL_MODEL_RETRY_LIMITS.max
+	);
+}
+
 export function isLocalModelContextWindow(value: unknown): value is number {
 	return (
 		typeof value === "number" &&
@@ -647,6 +688,15 @@ export function isLocalMaxTokens(value: unknown, contextWindow: number): value i
 	);
 }
 
+export function isLocalConcurrency(value: unknown): value is number {
+	return (
+		typeof value === "number" &&
+		Number.isSafeInteger(value) &&
+		value >= LOCAL_MODEL_CONCURRENCY_LIMITS.min &&
+		value <= LOCAL_MODEL_CONCURRENCY_LIMITS.max
+	);
+}
+
 export interface LocalModelEntry {
 	id: string;
 	contextWindow: number;
@@ -656,7 +706,7 @@ export interface LocalModelEntry {
 	vision: boolean;
 }
 
-/** A `local-*` provider in `models.json` that serves the OpenAI chat-completions API. */
+/** A `models.json` provider that serves the OpenAI chat-completions API from a base URL. */
 export interface LocalModelEndpoint {
 	id: string;
 	name: string;
@@ -665,6 +715,13 @@ export interface LocalModelEndpoint {
 	hasApiKey: boolean;
 	/** A model uses the llama.cpp/vLLM chat-template thinking format, so the server is one of those. */
 	chatTemplateThinking: boolean;
+	kind: LocalModelServerKind;
+	/** Simultaneous requests ThinkRail sends it; null = no limit. */
+	maxConcurrency: number | null;
+	/** Per-request timeout; null = pi's `retry.provider.timeoutMs` / `httpIdleTimeoutMs`. */
+	timeoutSeconds: number | null;
+	/** Retries of a failed request; null = pi's `retry.provider.maxRetries`. */
+	maxRetries: number | null;
 	models: LocalModelEntry[];
 }
 
@@ -688,19 +745,40 @@ export interface LocalModelProbedModel {
 
 export interface LocalModelProbe {
 	baseUrl: string;
+	/** Parallel request slots the server reports (llama.cpp `total_slots`), or null. */
+	slots: number | null;
 	models: LocalModelProbedModel[];
 }
 
 export interface LocalModelEndpointDraft {
 	/** Present to replace an existing endpoint; absent to add a new one. */
 	id?: string;
+	kind: LocalModelServerKind;
 	name: string;
 	baseUrl: string;
 	/** Omitted to keep the saved key; an empty string removes it. */
 	apiKey?: string;
-	/** Drives URL normalization and defaults only; it is not saved. */
-	kind: LocalModelServerKind;
+	/** null = no limit. */
+	maxConcurrency: number | null;
+	/** null = pi's default. */
+	timeoutSeconds: number | null;
+	/** null = pi's default. */
+	maxRetries: number | null;
 	models: LocalModelEntry[];
+}
+
+/** `skipped` on `chat` means every parallel slot of the endpoint was busy, so nothing was sent. */
+export type LocalModelCheck = "ok" | "failed" | "skipped";
+
+/** A live chat + tool-call round trip through pi, made the way an agent turn makes it. */
+export interface LocalModelTestResult {
+	chat: LocalModelCheck;
+	/** `failed` without `message` means the model answered in text instead of calling the tool. */
+	tools: LocalModelCheck;
+	latencyMs: number | null;
+	outputTokensPerSecond: number | null;
+	/** The server's or pi's error text as reported; never file contents. */
+	message: string | null;
 }
 
 export function isSharedModelContextTarget(
@@ -1078,6 +1156,7 @@ export interface WsMethodMap {
 	"localModels.probe": { params: LocalModelProbeRequest; result: LocalModelProbe };
 	"localModels.save": { params: LocalModelEndpointDraft; result: LocalModelEndpoint[] };
 	"localModels.remove": { params: { id: string }; result: LocalModelEndpoint[] };
+	"localModels.test": { params: { id: string; modelId: string }; result: LocalModelTestResult };
 	"provider.status": { params: Record<string, never>; result: ProviderStatusReport };
 	"provider.detect": { params: Record<string, never>; result: { accounts: DetectedAccount[] } };
 	"provider.loginStart": {

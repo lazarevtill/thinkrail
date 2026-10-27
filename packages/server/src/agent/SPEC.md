@@ -159,63 +159,94 @@ re-opened transcripts provider-valid.
     publisher seam (`setModelsFilePublisher`).
   - `localModels` — the settings adapter for local and self-hosted OpenAI chat-completions servers
     (llama.cpp, vLLM, Ollama, LM Studio, anything OpenAI-compatible), again a `models.json` editor, not a
-    registry: pi's own `models.json` provider support does the serving, and everything the feature
-    saves lives in that one file. `probeLocalModels` normalizes the base URL (drops `/models` /
-    `/chat/completions` / `/completions` suffixes; adds `/v1` for every kind but generic OpenAI-compatible; refuses a URL
-    carrying `user:pass@` or a query string, so a key always lives in the key field), `GET`s
-    `<base>/models` with a 5s timeout, and enriches per kind — llama.cpp `/props` (per-slot `n_ctx`,
-    `enable_thinking` template, `chat_template_caps.supports_tools`), Ollama `/api/show` (`num_ctx` from
-    the model's `parameters`, `tools`/`thinking`/`vision` capabilities), LM Studio `/api/v0/models`
-    (`loaded_context_length`, `vlm`, `tool_use`, drops embeddings); vLLM's `max_model_len` and llama.cpp's
-    `meta.n_ctx` / router `status.args` come from the listing itself, and the per-slot `/props` value wins
-    over them because `-c` is split across `-np` slots. Only the context a server runs
+    registry: pi's own `models.json` provider support does the serving. `probeLocalModels` normalizes the
+    base URL (drops `/models` / `/chat/completions` suffixes; adds `/v1` for every kind but generic
+    OpenAI-compatible), `GET`s `<base>/models` with a 5s timeout, and enriches per kind — llama.cpp
+    `/props` (per-slot `n_ctx`, `enable_thinking` template), Ollama `/api/show` (`num_ctx` from the
+    model's `parameters`, `thinking`/`vision` capabilities), LM Studio `/api/v0/models`
+    (`loaded_context_length`, `vlm`, drops embeddings); vLLM's `max_model_len` and llama.cpp's
+    `meta.n_ctx` / router `status.args` come from the listing itself. Only the context a server runs
     with counts: training lengths (`n_ctx_train`, Ollama's `*.context_length`, LM Studio's
     `max_context_length`) are ignored, so a context the server does not report stays `null` and the
-    dialog asks the user to set it rather than saving a window the server would truncate. The per-model
-    `tools` hint is null when the server does not say. A typed probe key follows pi's
-    `resolveConfigValue` template rules (`$NAME` / `${NAME}` interpolation anywhere in the value, `$$`
-    and `$!` escapes; pi does not export the resolver, so the rules are mirrored and pinned by tests)
-    except that a `!command` key is never run by a probe. A probe that names `endpointId` without a key
-    reuses the saved key only when that id is a listed `local-*` endpoint and its saved `baseUrl`,
-    normalized for the probe's kind, equals the probed URL; the key is resolved by pi itself
-    (`runtime.getAuth`), and a key pi cannot resolve fails with a closed message that never echoes it.
-    Any other URL is probed without a key, so an edited or mistyped URL never receives the saved bearer.
-    A keyed probe refuses redirects, so the bearer never follows a redirect to another host. Failures
-    surface a short closed reason (`HTTP n`, `timed out`, `connection failed`, `not a JSON reply`), never
-    response bodies. The probe's trust surface is the URL the user typed: the host fetches it from the server
-    process, which is the point of the feature (a server on the user's own network), and returns only
-    parsed model ids and limits.
-    `listLocalEndpoints` lists only the providers this feature owns — `local-*` ids with `api:
-    "openai-completions"`, a `baseUrl` and a `models` array — so a hand-written provider (a cloud
-    gateway, say) is neither listed nor edited nor removed here, and pi keeps serving it unchanged.
-    The list reports effective values (each model merged with its `modelOverrides` entry) and
-    `chatTemplateThinking` (some model carries the llama.cpp/vLLM chat-template thinking format). The
-    server kind is a form-only choice: it drives the probe, URL normalization and defaults, and is not
-    saved; the dialog guesses it on edit from that flag and the URL, so an edit that only renames a server
-    keeps its thinking settings.
-    `saveLocalEndpoint` validates the draft (name, ≥1 unique model, `isLocalModelContextWindow`, max
-    output within `LOCAL_MODEL_OUTPUT_LIMITS` and ≤ context, boolean thinking and image flags), allocates `local-<slug>` ids for new
-    endpoints, keeps an unchanged `baseUrl` exactly as written whatever kind the form picks (only an
-    edited URL is normalized), and on create writes the provider with pi's llama.cpp-provider compat
-    (`supportsStore`/`supportsDeveloperRole`/`supportsReasoningEffort`/`supportsStrictMode` false,
-    `max_tokens`); an edit keeps the provider's existing `compat` as it is. It writes zero cost, the
-    draft's `maxTokens` (the UI defaults it to the contracts' `defaultLocalMaxTokens`, ¼ context clamped
-    to 256–16K, because vLLM rejects prompt + `max_tokens` over its limit), and — for a thinking model on
-    llama.cpp/vLLM — `thinkingFormat: "qwen-chat-template"` with pi's off/medium level map. Reasoning off
-    drops any `thinkingFormat` and the level map; any other kind drops that chat-template format and its
-    level map, so a kind change never carries llama.cpp/vLLM thinking parameters to another server. An edit merges over the previous
-    provider/model objects so hand-added fields survive, and removes the fields it manages
-    (`contextWindow`, `maxTokens`, `reasoning`, `input`, `thinkingLevelMap`, `compat.thinkingFormat`)
-    from that model's `modelOverrides` entry, which pi would otherwise apply over the saved values; other
-    override keys stay. An omitted `apiKey` keeps the saved one unless the edit moves the endpoint to
-    another origin, which fails until the key is re-entered or removed, so a saved bearer never follows
-    a changed address; an empty one writes the
+    dialog asks the user to set it rather than saving a window the server would truncate. A typed probe
+    key follows pi's `resolveConfigValue` template rules (`$NAME` / `${NAME}` interpolation anywhere in the
+    value, `$$` and `$!` escapes; pi does not export the resolver, so the rules are mirrored and pinned by
+    tests) except that a `!command` key is never run by a probe. A probe that names `endpointId` without a
+    key reuses the saved key only when that id is a listed local endpoint and the normalized URL equals its
+    saved `baseUrl`, resolved by pi itself (`runtime.getAuth`); any other URL is probed without a key, so an
+    edited or mistyped URL never receives the saved bearer. Failures
+    surface a short closed reason (`HTTP n`, `timed out`, `connection failed`), never response bodies; a
+    saved key pi cannot resolve fails with a closed "Couldn't resolve the saved API key" message that
+    never echoes the key or its command. A URL carrying credentials (`user:pass@`) or a query string is
+    refused, so a key always lives in the key field. The probe's trust surface is the URL the user typed:
+    the host fetches it from the server process, which is the point of the feature (a server on the
+    user's own network), and returns only parsed model ids and limits.
+    `listLocalEndpoints` lists only providers ThinkRail created — a `providers.<id>` with `api:
+    "openai-completions"`, a `baseUrl`, a `models` array **and** a sidecar entry carrying its `kind` — so a
+    hand-written provider stays the user's: it is neither listed nor editable nor removable here, and pi
+    keeps serving it unchanged. llama.cpp's `/props` also yields
+    `total_slots` (the probe's `slots`, prefilled as the parallel limit) and
+    `chat_template_caps.supports_tools`; Ollama's `tools` capability and LM Studio's `tool_use` fill the
+    same per-model `tools` hint (null when the server does not say). `saveLocalEndpoint` validates the
+    draft (name, ≥1 unique model, `isLocalModelContextWindow`, max output within
+    `LOCAL_MODEL_OUTPUT_LIMITS` and ≤ context), allocates `local-<slug>` ids for new endpoints, keeps an
+    unchanged `baseUrl` exactly as written (only an edited URL is normalized), and on create writes the
+    provider with pi's llama.cpp-provider compat (`supportsStore`/`supportsDeveloperRole`/
+    `supportsReasoningEffort`/`supportsStrictMode` false, `max_tokens`); an edit keeps the provider's
+    existing `compat` as it is. It writes zero cost, the draft's `maxTokens` (the UI defaults it to the
+    contracts' `defaultLocalMaxTokens`, ¼ context clamped to 256–16K, because vLLM rejects prompt +
+    `max_tokens` over its limit), and — for a thinking model on llama.cpp/vLLM —
+    `thinkingFormat: "qwen-chat-template"` with pi's off/medium level map; any other kind, or reasoning
+    off, drops that chat-template format and its level map so a kind change never carries llama.cpp/vLLM
+    thinking parameters to another server. An edit merges over the previous provider/model objects so
+    hand-added fields survive, and removes the fields it manages (`contextWindow`, `maxTokens`,
+    `reasoning`, `input`, `thinkingLevelMap`, `compat.thinkingFormat`) from that model's
+    `modelOverrides` entry, which pi would otherwise apply over the saved values; other override keys
+    stay. The list reports the effective values (model merged with its override); an omitted `apiKey` keeps the saved one, an empty one writes the
     `thinkrail-local` placeholder pi needs to treat the provider as available (the dialog's "remove saved
-    key" sends it). The key never crosses the wire (`hasApiKey` only). `removeLocalEndpoint` deletes only
-    a listed endpoint. A save or removal that changes `models.json` refreshes the runtime and publishes
-    `provider.changed`; a no-op save does neither. The refresh is best-effort: a refresh failure is
-    logged and does not fail the save, because the file is already written and the next read refreshes
-    again.
+    key" sends it). The key never crosses the wire (`hasApiKey` only). What models.json cannot hold — the
+    server `kind`, the parallel-request limit, the per-endpoint request timeout and the provider-retry
+    count — lives in the sibling `localModelSettings` sidecar (`<dataDir>/local-models.json`, `0o600`,
+    sanitized on read and held as an in-memory snapshot that its own writer replaces, so the per-request
+    lookup never touches the disk), so pi never sees an unknown key. A missing sidecar reads as empty; a
+    sidecar that exists but cannot be parsed is never overwritten — saves fail with a closed message
+    until the user fixes or removes it. A save or removal writes the sidecar first and models.json
+    second; a failed models.json write restores the previous sidecar entry, so a failure can neither
+    leave a provider without its settings nor make a retry add a duplicate. `provider.changed` is
+    published whenever models.json **or** the sidecar changed (a settings-only save still updates other
+    clients); a no-op save publishes nothing. The runtime refresh after a successful write is
+    best-effort: a refresh failure is logged and does not fail the save, because the files are already
+    consistent and the next read refreshes again. Removing an endpoint also forgets its idle request
+    gate. `testLocalModel` refreshes, resolves the saved model from the settled snapshot, and — unless
+    every slot of the endpoint is already busy, in which case it reports `chat`/`tools` `skipped`
+    without sending anything, so a Test never queues behind a running agent turn — sends two
+    `completeSimple` requests through the runtime: a plain reply, then a forced-looking
+    `get_current_time` tool request, so compat, credentials and the parallel limit apply exactly as in an
+    agent turn. Its budget is `localModelTestBudgetMs` (the endpoint's timeout, at least 180 s, times its
+    attempts). It reports `chat`/`tools` (`ok`/`failed`/`skipped`), latency, output tokens/s and pi's
+    `errorMessage` verbatim (the user's own server's text, never file contents).
+  - `requestLimits` — the per-endpoint request options: parallel-request limit, timeout and retries. A
+    saved `timeoutSeconds` / `maxRetries` overrides pi's global `retry.provider.timeoutMs` / `maxRetries`
+    in that provider's request options; unset values leave pi's settings in force. A caller that asks
+    for no retries (`maxRetries: 0`, e.g. pi's cache warmer) keeps it; the saved count replaces only pi's
+    global provider default and adds no retry layer of its own, so pi's turn-level retries multiply with
+    it exactly as they do with pi's default. With a parallel limit
+    the timeout moves into the limited `fetch`: it starts only after the slot is acquired and covers the
+    wait for response headers and then every pause between body chunks (an idle timer re-armed on each
+    read), so a server that stops streaming mid-reply frees its slot instead of holding it forever. The
+    SDK's own timeout is set to the maximum timer, so queue time never counts as a slow server and a
+    queued request is never aborted and re-queued by a retry; pi's own `retryProviderRequest` does the
+    retrying, so each retry is a fresh request that queues for a slot again. `installRequestLimits` runs
+    once on every runtime the module creates or is configured with and wraps the instance's `stream` /
+    `streamSimple` / `complete` / `completeSimple` (each only when present) to add these options for a
+    provider with saved settings; an already-limited `fetch` is not wrapped twice, so nested dispatch
+    cannot deadlock. The limited `fetch` holds a slot of a per-provider counting gate from request start
+    until the response body is fully read, cancelled, stalls or errors, and a queued request honours its
+    abort signal. The limit is re-read on every acquire and release, so a saved change applies to the
+    next request without a new generation; every pi caller — agent turns, subagents, compaction,
+    one-shot completions and the agent check — goes through it. `requestLoad` exposes active/queued
+    counts (the agent check's busy test, and tests). This wrapping is a pi-sensitive seam listed in
+    [[pi-compatibility]].
   - `agentSessionManager` — sessions keyed by `session.sessionId` (each `Entry` also tracks its
     `workspaceId`), `createSession({ cwd, workspaceId, model?, thinkingLevel? })` → `createAgentSession(...)`
     with a per-session `SessionManager` **and `buildSessionSettings(cwd, projectTrusted)`** (the user's
@@ -1044,7 +1075,7 @@ re-opened transcripts provider-valid.
   closed `load-failed` outcome—no manager internals) plus `configurePiRuntime`/factory test seams and the
   pre-bootstrap `configurePiRuntimeGenerationInitializer` composition seam; `listModelContextSettings` /
   `setModelContextWindow` (the `modelContext` adapter); `listLocalEndpoints` / `probeLocalModels` /
-  `saveLocalEndpoint` / `removeLocalEndpoint` (the `localModels` adapter); `setModelsFilePublisher` (their
+  `saveLocalEndpoint` / `removeLocalEndpoint` / `testLocalModel` (the `localModels` adapter); `setModelsFilePublisher` (their
   shared `provider.changed` seam); `piLoginOptions` (pi login options
   carrying the lazily created installation device id, for `auth`);
   `completeOnce`/`pickModel` +

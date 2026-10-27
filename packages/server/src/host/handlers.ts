@@ -80,6 +80,7 @@ import {
 	stopAllSubagents,
 	stopBackgroundCommand,
 	stopSubagent,
+	testLocalModel,
 } from "../agent";
 import {
 	type AdditionalAnalyticsCapture,
@@ -1257,6 +1258,7 @@ const handlers: WsHandlers = {
 	"localModels.probe": (p) => probeLocalModels(p),
 	"localModels.save": (p) => saveLocalEndpoint(p),
 	"localModels.remove": (p) => removeLocalEndpoint(p.id),
+	"localModels.test": (p) => testLocalModel(p.id, p.modelId),
 	"model.default": () =>
 		observeSetupRead(
 			() => resolveNewChatModel({}),
