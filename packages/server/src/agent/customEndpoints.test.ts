@@ -313,6 +313,7 @@ test("save writes only reported facts with derived output and conservative compa
 			name: "Company gateway",
 			baseUrl: "https://llm.corp.example/v1",
 			hasApiKey: true,
+			limits: { maxConcurrency: null, timeoutSeconds: null, maxRetries: null },
 			models: [
 				model("known", { contextWindow: 131_072, maxTokens: defaultMaxTokens(131_072) }),
 				model("reported-output", { contextWindow: 200_000, maxTokens: 32_000, reasoning: true }),

@@ -665,7 +665,15 @@ default, narrow cross-ring guards, and the quit-confirmation rule both clients d
   `timeout`, `unreachable`, `not-openai` with an optional HTTP `status`, `no-models`) so the client
   localizes it. Saves take a `CustomEndpointDraft` (absent `id` = add; absent `apiKey` = keep, `""` =
   clear). Every list/save/remove returns `CustomEndpoint[]` (`id`, `name`, `baseUrl`, `hasApiKey` rather
-  than the key, models); a save or removal that changes `models.json` emits `provider.changed`) /
+  than the key, models); a save or removal that changes `models.json` emits `provider.changed`. Fork,
+  v103 (`CUSTOM_ENDPOINT_LIMITS_PROTOCOL_VERSION`): every endpoint carries `limits:
+  CustomEndpointLimits` (`maxConcurrency` / `timeoutSeconds` / `maxRetries`, `null` = pi's behaviour,
+  bounded by `CUSTOM_ENDPOINT_CONCURRENCY_LIMITS` / `_TIMEOUT_LIMITS` / `_RETRY_LIMITS` and checked by
+  `isEndpointConcurrency` / `isEndpointTimeoutSeconds` / `isEndpointRetries`); a draft without `limits`
+  keeps the saved ones, and a limits-only change also emits `provider.changed`.
+  **`customEndpoints.test`** `{id, modelId}` → `CustomEndpointTestResult` (`chat` / `tools` as
+  `CustomEndpointCheck` `ok` / `failed` / `skipped`, `latencyMs`, `outputTokensPerSecond`, `message`); a
+  client waits at least `customEndpointTestBudgetMs(limits)`) /
   **`model.clampThinking`** (pi's
   `clampThinkingLevel` for a `{model, level}` pair — the pre-session picker's effort adjustment, so no
   client re-derives pi's policy) / **`provider.status`**

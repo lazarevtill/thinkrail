@@ -17,8 +17,10 @@ import {
 	CLIENT_ERROR_REPORT_PROTOCOL_VERSION,
 	CONTEXT_WINDOW_SETTINGS_PROTOCOL_VERSION,
 	CUSTOM_ENDPOINT_ID_PREFIX,
+	CUSTOM_ENDPOINT_LIMITS_PROTOCOL_VERSION,
 	CUSTOM_ENDPOINTS_PROTOCOL_VERSION,
 	completionDelivery,
+	customEndpointTestBudgetMs,
 	customMessageText,
 	DEFAULT_MODEL_PROTOCOL_VERSION,
 	EXTENSION_CATALOG_PROTOCOL_VERSION,
@@ -28,6 +30,9 @@ import {
 	HOST_UPDATE_RUN_PROTOCOL_VERSION,
 	isBackgroundCommandCompletionMessage,
 	isCustomEndpointId,
+	isEndpointConcurrency,
+	isEndpointRetries,
+	isEndpointTimeoutSeconds,
 	isTodoReviewFixMessage,
 	isToolResponsePending,
 	JBCENTRAL_QUOTA_PROTOCOL_VERSION,
@@ -242,7 +247,7 @@ test("tool responses replace the ask-only answer method at v93", () => {
 
 test("user-selectable fonts are pinned to v102", () => {
 	expect(FONTS_PROTOCOL_VERSION).toBe(102);
-	expect(PROTOCOL_VERSION).toBe(102);
+	expect(PROTOCOL_VERSION).toBeGreaterThanOrEqual(FONTS_PROTOCOL_VERSION);
 	expect(WS_METHODS.fontsList).toBe("fonts.list");
 	expect(WS_METHODS.fontsInstalled).toBe("fonts.installed");
 	expect(WS_METHODS.fontsReveal).toBe("fonts.reveal");
@@ -561,4 +566,22 @@ test("custom endpoints are pinned to v101 and own only custom-* providers", () =
 	expect(WS_METHODS.customEndpointsProbe).toBe("customEndpoints.probe");
 	expect(isCustomEndpointId(`${CUSTOM_ENDPOINT_ID_PREFIX}gateway`)).toBe(true);
 	expect(isCustomEndpointId("ollama")).toBe(false);
+});
+
+test("fork: custom endpoint limits and the agent check ride v103", () => {
+	expect(CUSTOM_ENDPOINT_LIMITS_PROTOCOL_VERSION).toBe(103);
+	expect(PROTOCOL_VERSION).toBe(103);
+	expect(WS_METHODS.customEndpointsTest).toBe("customEndpoints.test");
+	expect(isEndpointConcurrency(4)).toBe(true);
+	expect(isEndpointConcurrency(0)).toBe(false);
+	expect(isEndpointTimeoutSeconds(600)).toBe(true);
+	expect(isEndpointTimeoutSeconds(5)).toBe(false);
+	expect(isEndpointRetries(0)).toBe(true);
+	expect(isEndpointRetries(11)).toBe(false);
+	expect(
+		customEndpointTestBudgetMs({ maxConcurrency: null, timeoutSeconds: null, maxRetries: null }),
+	).toBe(180_000);
+	expect(
+		customEndpointTestBudgetMs({ maxConcurrency: 2, timeoutSeconds: 600, maxRetries: 2 }),
+	).toBe(1_800_000);
 });

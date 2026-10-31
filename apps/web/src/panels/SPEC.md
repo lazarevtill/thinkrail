@@ -807,7 +807,12 @@ a project picker, the prompt hero, and the reused
   facts the server doesn't report, takes reported ones, drops a saved max output once a new context is
   reported, and keeps models the server no longer lists; an unchanged saved address stays as written. The
   pure draft rules live in `customEndpointDraft`; probe failures render as localized inline status and
-  host save errors render inline; and
+  host save errors render inline. Fork, from v103: the dialog adds a **Request limits** fieldset
+  (Parallel requests, Timeout (seconds), Retries — blank means no limit or pi's default; out-of-range
+  values mark the field invalid, show the range and disable Save); the endpoint row appends a limits
+  summary and lists its models, each with a **Test** button (`customEndpoints.test`, waiting
+  `customEndpointTestBudgetMs` plus a reply margin) whose result line shows chat / tool calls / latency /
+  tok/s, or that every parallel slot is busy; and
   the **`JetBrainsAiCard`** — route Central-supported models through the user's JetBrains subscription while
   keeping ThinkRail's embedded PI — a state machine over the typed `JbcentralStatus` +
   `provider.jbcentral*`: absent (official host-OS install guidance + Recheck), outdated — below the host's

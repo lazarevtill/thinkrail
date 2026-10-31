@@ -81,6 +81,7 @@ import {
 	stopAllSubagents,
 	stopBackgroundCommand,
 	stopSubagent,
+	testCustomEndpoint,
 } from "../agent";
 import {
 	type AdditionalAnalyticsCapture,
@@ -1275,6 +1276,7 @@ const handlers: WsHandlers = {
 	"customEndpoints.probe": (p) => probeCustomEndpoint(p),
 	"customEndpoints.save": (p) => saveCustomEndpoint(p),
 	"customEndpoints.remove": (p) => removeCustomEndpoint(p.id),
+	"customEndpoints.test": (p) => testCustomEndpoint(p.id, p.modelId),
 	"model.default": () =>
 		observeSetupRead(
 			() => resolveNewChatModel({}),
