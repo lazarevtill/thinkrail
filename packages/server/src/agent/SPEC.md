@@ -214,6 +214,23 @@ re-opened transcripts provider-valid.
       one.
     - A save or removal that changes the file refreshes the runtime (best-effort; a refresh failure is
       logged, since the file is already written) and publishes `provider.changed`; a no-op does neither.
+    - **Request limits (fork).** pi has no per-provider concurrency, timeout or retry setting, so an
+      endpoint's `limits` (parallel requests 1–256, timeout 10–3600 s, retries 0–10; `null` = pi's
+      behaviour) live in ThinkRail's own `<dataDir>/local-models.json` sidecar (`endpointLimits`,
+      `{version: 1, endpoints: {id: {...}}}`, atomic writes, mode 0600), never in `models.json`, so the pi
+      CLI is unaffected. A save without `limits` keeps the saved ones; a removal drops them and the
+      endpoint's request gate. The sidecar is written first and restored if the `models.json` write fails,
+      a limits-only change still publishes `provider.changed`, and an unreadable sidecar is never
+      overwritten (the save fails). `requestLimits.installRequestLimits` wraps each runtime's `stream` /
+      `streamSimple` / `complete` / `completeSimple`: a saved endpoint's calls get a counting-gate `fetch`
+      (queue wait doesn't count against the timeout; a queued request can be aborted; a stalled or
+      cancelled body frees its slot; nested dispatch isn't re-gated), the SDK timeout moved onto that
+      `fetch`, and `maxRetries` (a caller's explicit `0` wins). See `pi-compatibility.md`.
+    - **Agent check (fork).** `endpointTest.testCustomEndpoint(id, modelId)` sends one short chat and one
+      forced `get_current_time` tool call through pi to a saved `custom-*` model and reports `chat` /
+      `tools` (`ok` / `failed` / `skipped`), latency and output tokens per second. A busy gate (every
+      parallel slot taken) reports `skipped` instead of queueing. Its budget,
+      `customEndpointTestBudgetMs(limits)`, is shared with the client's request timeout.
   - `agentSessionManager` — sessions keyed by `session.sessionId` (each `Entry` also tracks its
     `workspaceId`), `createSession({ cwd, workspaceId, model?, thinkingLevel? })` → `createAgentSession(...)`
     with a per-session `SessionManager` **and `buildSessionSettings(cwd, projectTrusted)`** (the user's
@@ -1113,7 +1130,8 @@ re-opened transcripts provider-valid.
   closed `load-failed` outcome—no manager internals) plus `configurePiRuntime`/factory test seams and the
   pre-bootstrap `configurePiRuntimeGenerationInitializer` composition seam; `listModelContextSettings` /
   `setModelContextWindow` (the `modelContext` adapter); `listCustomEndpoints` / `probeCustomEndpoint` /
-  `saveCustomEndpoint` / `removeCustomEndpoint` (the `customEndpoints` adapter); `setModelsFilePublisher`
+  `saveCustomEndpoint` / `removeCustomEndpoint` (the `customEndpoints` adapter) and `testCustomEndpoint`
+  (fork: the agent check); `setModelsFilePublisher`
   (their shared `provider.changed` seam); `piLoginOptions` (pi login options
   carrying the lazily created installation device id, for `auth`);
   `completeOnce`/`pickModel` +

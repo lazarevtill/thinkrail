@@ -8,6 +8,7 @@ import {
 	draftParams,
 	editEndpointDraft,
 	LOCAL_SERVER_PRESETS,
+	limitIssues,
 	mergeProbe,
 	newEndpointDraft,
 	probeTarget,
@@ -31,6 +32,7 @@ const saved = {
 	name: "Gateway",
 	baseUrl: "https://gw.example/v1",
 	hasApiKey: true,
+	limits: { maxConcurrency: null, timeoutSeconds: null, maxRetries: null },
 	models: [model("a", { contextWindow: 8_000, maxTokens: 2_000 }), model("manual")],
 };
 
@@ -108,15 +110,15 @@ test("save sends selected models, keeps a saved key unless replaced or removed",
 		...editEndpointDraft(saved),
 		models: editEndpointDraft(saved).models.map((row) => ({ ...row, selected: row.id === "a" })),
 	};
-	expect(draftParams(draft)).toEqual({
+	expect(draftParams(draft, false)).toEqual({
 		id: "custom-gw",
 		name: "Gateway",
 		baseUrl: "https://gw.example/v1",
 		models: [model("a", { contextWindow: 8_000, maxTokens: 2_000 })],
 	});
-	expect(draftParams({ ...draft, apiKey: " sk-new " }).apiKey).toBe("sk-new");
-	expect(draftParams({ ...draft, removeKey: true }).apiKey).toBe("");
-	expect(draftParams(newEndpointDraft()).apiKey).toBe("");
+	expect(draftParams({ ...draft, apiKey: " sk-new " }, false).apiKey).toBe("sk-new");
+	expect(draftParams({ ...draft, removeKey: true }, false).apiKey).toBe("");
+	expect(draftParams(newEndpointDraft(), false).apiKey).toBe("");
 });
 
 test("manual ids are trimmed, deduplicated and selected; saving needs a name, address and a model", () => {
@@ -173,6 +175,39 @@ test("a re-detect keeps a chat-template thinking fact the server stopped reporti
 		models: [model("hybrid", { contextWindow: 16_384 })],
 	});
 	expect(merged.models[0]).toMatchObject({ chatTemplateThinking: true, contextWindow: 16_384 });
-	expect(draftParams(merged).models[0]?.chatTemplateThinking).toBe(true);
+	expect(draftParams(merged, false).models[0]?.chatTemplateThinking).toBe(true);
 	expect(addManualModel(merged, "new").models.at(-1)?.chatTemplateThinking).toBeNull();
+});
+
+test("fork: request limits load from the endpoint, validate as whole numbers and save only when sent", () => {
+	const draft = editEndpointDraft({
+		...saved,
+		limits: { maxConcurrency: 2, timeoutSeconds: null, maxRetries: 0 },
+	});
+	expect(draft).toMatchObject({ concurrencyText: "2", timeoutText: "", retriesText: "0" });
+	expect(draftParams(draft, true).limits).toEqual({
+		maxConcurrency: 2,
+		timeoutSeconds: null,
+		maxRetries: 0,
+	});
+	expect(draftParams(draft, false)).not.toHaveProperty("limits");
+	const cleared = { ...draft, concurrencyText: " ", retriesText: "" };
+	expect(draftParams(cleared, true).limits).toEqual({
+		maxConcurrency: null,
+		timeoutSeconds: null,
+		maxRetries: null,
+	});
+	for (const [field, text] of [
+		["concurrencyText", "0"],
+		["concurrencyText", "1.5"],
+		["timeoutText", "5"],
+		["timeoutText", "abc"],
+		["retriesText", "11"],
+	] as const) {
+		const bad = { ...draft, [field]: text };
+		expect(Object.values(limitIssues(bad))).toContain(true);
+		expect(canSave(bad)).toBe(false);
+	}
+	expect(limitIssues(draft)).toEqual({ concurrency: false, timeout: false, retries: false });
+	expect(canSave(draft)).toBe(true);
 });

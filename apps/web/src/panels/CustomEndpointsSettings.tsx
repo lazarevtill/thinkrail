@@ -1,14 +1,21 @@
 import {
+	RiPlayLine as Play,
 	RiAddLine as Plus,
 	RiSearchLine as Search,
 	RiDeleteBin6Line as Trash2,
 } from "@remixicon/react";
 import {
+	CUSTOM_ENDPOINT_CONCURRENCY_LIMITS,
+	CUSTOM_ENDPOINT_LIMITS_PROTOCOL_VERSION,
+	CUSTOM_ENDPOINT_RETRY_LIMITS,
+	CUSTOM_ENDPOINT_TIMEOUT_LIMITS,
 	CUSTOM_ENDPOINTS_PROTOCOL_VERSION,
 	type CustomEndpoint,
 	type CustomEndpointModel,
+	type CustomEndpointTestResult,
+	customEndpointTestBudgetMs,
 } from "@thinkrail/contracts";
-import { useT } from "@thinkrail/locales/react";
+import { type Translator, useT } from "@thinkrail/locales/react";
 import { Button, IconButton } from "@thinkrail/ui/button";
 import {
 	Dialog,
@@ -33,6 +40,7 @@ import {
 	type EndpointDraft,
 	editEndpointDraft,
 	LOCAL_SERVER_PRESETS,
+	limitIssues,
 	mergeProbe,
 	newEndpointDraft,
 	probeFailureText,
@@ -46,8 +54,128 @@ const INPUT_CLASS =
 
 type Status = { tone: "ok" | "error"; text: string } | null;
 
+const TEST_REPLY_MARGIN_MS = 15_000;
+
 function supported(protocolVersion: number | null): boolean {
 	return protocolVersion !== null && protocolVersion >= CUSTOM_ENDPOINTS_PROTOCOL_VERSION;
+}
+
+function useLimitsSupported(): boolean {
+	const protocolVersion = useAppStore((state) => state.protocolVersion);
+	return protocolVersion !== null && protocolVersion >= CUSTOM_ENDPOINT_LIMITS_PROTOCOL_VERSION;
+}
+
+function LimitInput({
+	id,
+	label,
+	testId,
+	value,
+	invalid,
+	disabled,
+	placeholder,
+	onChange,
+}: {
+	id: string;
+	label: string;
+	testId: string;
+	value: string;
+	invalid: boolean;
+	disabled: boolean;
+	placeholder: string;
+	onChange: (value: string) => void;
+}) {
+	return (
+		<div className="flex w-160 flex-col gap-4">
+			<label htmlFor={id} className="tr-text-metadata text-text-muted">
+				{label}
+			</label>
+			<input
+				id={id}
+				data-testid={testId}
+				inputMode="numeric"
+				className={cn(INPUT_CLASS, invalid && "border-feedback-error")}
+				value={value}
+				disabled={disabled}
+				aria-invalid={invalid}
+				placeholder={placeholder}
+				onChange={(event) => onChange(event.currentTarget.value)}
+			/>
+		</div>
+	);
+}
+
+function LimitFields({
+	draft,
+	disabled,
+	onChange,
+}: {
+	draft: EndpointDraft;
+	disabled: boolean;
+	onChange: (draft: EndpointDraft) => void;
+}) {
+	const t = useT();
+	const id = useId();
+	const issues = limitIssues(draft);
+	return (
+		<fieldset className="m-0 flex min-w-0 flex-col gap-8 border-0 p-0">
+			<legend className="mb-4 tr-title-compact text-text-default">
+				{t("settings.customEndpoints.limits")}
+			</legend>
+			<div className="flex flex-wrap gap-12">
+				<LimitInput
+					id={`${id}-parallel`}
+					label={t("settings.customEndpoints.parallel")}
+					testId="custom-endpoints-parallel"
+					value={draft.concurrencyText}
+					invalid={issues.concurrency}
+					disabled={disabled}
+					placeholder={t("settings.customEndpoints.parallelNoLimit")}
+					onChange={(concurrencyText) => onChange({ ...draft, concurrencyText })}
+				/>
+				<LimitInput
+					id={`${id}-timeout`}
+					label={t("settings.customEndpoints.timeout")}
+					testId="custom-endpoints-timeout"
+					value={draft.timeoutText}
+					invalid={issues.timeout}
+					disabled={disabled}
+					placeholder={t("settings.customEndpoints.piDefault")}
+					onChange={(timeoutText) => onChange({ ...draft, timeoutText })}
+				/>
+				<LimitInput
+					id={`${id}-retries`}
+					label={t("settings.customEndpoints.retries")}
+					testId="custom-endpoints-retries"
+					value={draft.retriesText}
+					invalid={issues.retries}
+					disabled={disabled}
+					placeholder={t("settings.customEndpoints.piDefault")}
+					onChange={(retriesText) => onChange({ ...draft, retriesText })}
+				/>
+			</div>
+			<p className="tr-text-metadata text-text-muted">
+				{t("settings.customEndpoints.parallelHint")}
+			</p>
+			<p className="tr-text-metadata text-text-muted">
+				{t("settings.customEndpoints.timeoutHint")}
+			</p>
+			{issues.concurrency ? (
+				<p className="tr-text-metadata text-feedback-error">
+					{t("settings.customEndpoints.parallelInvalid", CUSTOM_ENDPOINT_CONCURRENCY_LIMITS)}
+				</p>
+			) : null}
+			{issues.timeout ? (
+				<p className="tr-text-metadata text-feedback-error">
+					{t("settings.customEndpoints.timeoutInvalid", CUSTOM_ENDPOINT_TIMEOUT_LIMITS)}
+				</p>
+			) : null}
+			{issues.retries ? (
+				<p className="tr-text-metadata text-feedback-error">
+					{t("settings.customEndpoints.retriesInvalid", CUSTOM_ENDPOINT_RETRY_LIMITS)}
+				</p>
+			) : null}
+		</fieldset>
+	);
 }
 
 function Field({
@@ -111,6 +239,7 @@ function EndpointDialog({
 	const [status, setStatus] = useState<Status>(null);
 	const busy = probing || saving;
 	const autoDetected = useRef(false);
+	const limitsSupported = useLimitsSupported();
 
 	const detect = useCallback(
 		(current: EndpointDraft) => {
@@ -146,7 +275,7 @@ function EndpointDialog({
 		setSaving(true);
 		setStatus(null);
 		void getTransport()
-			.request("customEndpoints.save", draftParams(draft))
+			.request("customEndpoints.save", draftParams(draft, limitsSupported))
 			.then((endpoints) => {
 				onSaved(endpoints);
 				onClose();
@@ -259,6 +388,9 @@ function EndpointDialog({
 							) : null}
 						</div>
 					</Field>
+					{limitsSupported ? (
+						<LimitFields draft={draft} disabled={busy} onChange={setDraft} />
+					) : null}
 					<div className="flex flex-col gap-4">
 						<div className="flex items-center justify-between gap-8">
 							<span className="tr-title-compact text-text-default">
@@ -378,6 +510,114 @@ function EndpointDialog({
 	);
 }
 
+type TestState =
+	| { running: true }
+	| { running: false; result: CustomEndpointTestResult | null; error: string | null };
+
+function testSummary(t: Translator, result: CustomEndpointTestResult): string {
+	if (result.chat === "skipped") return t("settings.customEndpoints.test.busy");
+	const parts = [
+		result.chat === "ok"
+			? t("settings.customEndpoints.test.chatOk")
+			: t("settings.customEndpoints.test.chatFailed"),
+	];
+	if (result.tools === "ok") parts.push(t("settings.customEndpoints.test.toolsOk"));
+	else if (result.tools === "failed") parts.push(t("settings.customEndpoints.test.toolsFailed"));
+	if (result.latencyMs !== null)
+		parts.push(
+			t("settings.customEndpoints.test.latency", { seconds: (result.latencyMs / 1000).toFixed(1) }),
+		);
+	if (result.outputTokensPerSecond !== null)
+		parts.push(t("settings.customEndpoints.test.speed", { rate: result.outputTokensPerSecond }));
+	return parts.join(" · ");
+}
+
+function testStateName(state: TestState | undefined): string {
+	if (!state) return "idle";
+	if (state.running) return "running";
+	if (state.result?.chat === "skipped") return "busy";
+	return state.result?.chat === "ok" && state.result.tools === "ok" ? "ok" : "failed";
+}
+
+function ModelTestRow({
+	model,
+	state,
+	onTest,
+}: {
+	model: CustomEndpointModel;
+	state: TestState | undefined;
+	onTest: () => void;
+}) {
+	const t = useT();
+	const result = state && !state.running ? state.result : null;
+	const failure = state && !state.running ? state.error : null;
+	const name = testStateName(state);
+	return (
+		<li
+			data-testid="custom-endpoints-model"
+			data-model={model.id}
+			data-test-state={name}
+			className="flex flex-col gap-2 py-4 pl-12"
+		>
+			<div className="flex items-center gap-8">
+				<span className="flex min-w-0 flex-1 flex-col">
+					<span className="truncate tr-text-metadata text-text-default" title={model.id}>
+						{model.id}
+					</span>
+					<ModelFacts model={model} />
+				</span>
+				<Button
+					variant="ghost"
+					size="m"
+					iconLeft={Play}
+					data-testid="custom-endpoints-test"
+					loading={state?.running === true}
+					disabled={state?.running === true}
+					aria-label={t("settings.customEndpoints.test.label", { name: model.id })}
+					onClick={onTest}
+				>
+					{state?.running
+						? t("settings.customEndpoints.test.running")
+						: t("settings.customEndpoints.test.run")}
+				</Button>
+			</div>
+			{result ? (
+				<p
+					data-testid="custom-endpoints-test-result"
+					className={cn(
+						"tr-text-metadata",
+						name === "failed" ? "text-feedback-error" : "text-text-muted",
+					)}
+				>
+					{testSummary(t, result)}
+				</p>
+			) : null}
+			{result?.message || failure ? (
+				<p className="break-words tr-text-metadata text-feedback-error">
+					{result?.message ?? failure}
+				</p>
+			) : null}
+		</li>
+	);
+}
+
+function limitsSummary(t: Translator, endpoint: CustomEndpoint): string {
+	const { maxConcurrency, timeoutSeconds, maxRetries } = endpoint.limits;
+	return [
+		maxConcurrency === null
+			? t("settings.customEndpoints.parallelUnlimited")
+			: t("settings.customEndpoints.parallelSummary", { count: maxConcurrency }),
+		timeoutSeconds === null
+			? null
+			: t("settings.customEndpoints.timeoutSummary", { seconds: timeoutSeconds }),
+		maxRetries === null
+			? null
+			: t("settings.customEndpoints.retriesSummary", { count: maxRetries }),
+	]
+		.filter((part): part is string => part !== null)
+		.join(" · ");
+}
+
 export interface CustomEndpointsState {
 	endpoints: CustomEndpoint[] | null;
 	failed: boolean;
@@ -426,6 +666,8 @@ export function CustomEndpointsSettings({
 	const t = useT();
 	const [dialog, setDialog] = useState<EndpointDraft | null>(null);
 	const [removing, setRemoving] = useState<CustomEndpoint | null>(null);
+	const [tests, setTests] = useState<Record<string, TestState>>({});
+	const limitsSupported = useLimitsSupported();
 
 	const remove = async (endpoint: CustomEndpoint) => {
 		try {
@@ -433,6 +675,20 @@ export function CustomEndpointsSettings({
 		} catch (error) {
 			toast.error(errorText(error), t("settings.customEndpoints.removeFailed"));
 		}
+	};
+
+	const runTest = (endpoint: CustomEndpoint, model: CustomEndpointModel) => {
+		const key = `${endpoint.id}/${model.id}`;
+		const settle = (next: TestState) => setTests((current) => ({ ...current, [key]: next }));
+		settle({ running: true });
+		void getTransport()
+			.request(
+				"customEndpoints.test",
+				{ id: endpoint.id, modelId: model.id },
+				{ timeoutMs: customEndpointTestBudgetMs(endpoint.limits) + TEST_REPLY_MARGIN_MS },
+			)
+			.then((result) => settle({ running: false, result, error: null }))
+			.catch((error: unknown) => settle({ running: false, result: null, error: errorText(error) }));
 	};
 
 	return (
@@ -455,32 +711,50 @@ export function CustomEndpointsSettings({
 						data-row
 						data-testid="custom-endpoints-endpoint"
 						data-endpoint={endpoint.id}
-						className="flex items-center gap-8 border-border-muted border-b py-12"
+						className="flex flex-col gap-4 border-border-muted border-b py-12"
 					>
-						<div className="flex min-w-0 flex-1 flex-col gap-2">
-							<span className="truncate tr-text-ui text-text-default">{endpoint.name}</span>
-							<span className="truncate tr-text-metadata text-text-muted" title={endpoint.baseUrl}>
-								{t("settings.customEndpoints.endpointSummary", {
-									url: endpoint.baseUrl,
-									count: endpoint.models.length,
-								})}
-							</span>
+						<div className="flex items-center gap-8">
+							<div className="flex min-w-0 flex-1 flex-col gap-2">
+								<span className="truncate tr-text-ui text-text-default">{endpoint.name}</span>
+								<span
+									className="truncate tr-text-metadata text-text-muted"
+									title={endpoint.baseUrl}
+								>
+									{t("settings.customEndpoints.endpointSummary", {
+										url: endpoint.baseUrl,
+										count: endpoint.models.length,
+									})}
+									{limitsSupported ? ` · ${limitsSummary(t, endpoint)}` : null}
+								</span>
+							</div>
+							<Button
+								variant="ghost"
+								size="m"
+								data-testid="custom-endpoints-edit"
+								aria-label={t("settings.customEndpoints.editLabel", { name: endpoint.name })}
+								onClick={() => setDialog(editEndpointDraft(endpoint))}
+							>
+								{t("common.edit")}
+							</Button>
+							<IconButton
+								icon={Trash2}
+								label={t("settings.customEndpoints.removeLabel", { name: endpoint.name })}
+								data-testid="custom-endpoints-remove"
+								onClick={() => setRemoving(endpoint)}
+							/>
 						</div>
-						<Button
-							variant="ghost"
-							size="m"
-							data-testid="custom-endpoints-edit"
-							aria-label={t("settings.customEndpoints.editLabel", { name: endpoint.name })}
-							onClick={() => setDialog(editEndpointDraft(endpoint))}
-						>
-							{t("common.edit")}
-						</Button>
-						<IconButton
-							icon={Trash2}
-							label={t("settings.customEndpoints.removeLabel", { name: endpoint.name })}
-							data-testid="custom-endpoints-remove"
-							onClick={() => setRemoving(endpoint)}
-						/>
+						{limitsSupported ? (
+							<ul className="flex flex-col">
+								{endpoint.models.map((model) => (
+									<ModelTestRow
+										key={model.id}
+										model={model}
+										state={tests[`${endpoint.id}/${model.id}`]}
+										onTest={() => runTest(endpoint, model)}
+									/>
+								))}
+							</ul>
+						) : null}
 					</div>
 				))
 			)}

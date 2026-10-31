@@ -222,6 +222,15 @@ apart from the recorded selection. Run the manager's restart regressions on upgr
   queues still carry `extensionPath` and are filled before `extensionsOverride` runs; run the provider-owner
   regressions in `agent/extensions.test.ts`, `agent/delegation.test.ts` and `pi-delegation`'s
   `service.test.ts` on every upgrade.
+- **Custom endpoint request options (fork)** — [[submodule-server-agent]], `requestLimits.ts`. Pi has no
+  per-provider concurrency, timeout or retry setting, so `installRequestLimits` wraps each runtime's
+  `stream` / `streamSimple` / `complete` / `completeSimple` and adds `fetch`, `timeoutMs` and
+  `maxRetries` to the request options of a saved `custom-*` endpoint with limits. It relies on pi passing
+  those options through to the OpenAI SDK and to `retryProviderRequest`, and on every model call going
+  through those four methods. **Removal gate:** a public per-provider request-option or dispatch hook in
+  pi. Re-check that the four methods still exist and that the options still reach the provider; run
+  `endpointLimits.test.ts` (parallel queue, retries/timeout reaching pi, nested dispatch not re-gated,
+  abort and stall release) and `e2e/settings-custom-endpoint-limits.spec.ts`.
 - **Image-only queued input** — [[submodule-server-agent]], queue projection. The host compensates for
   pi's text-only delivered-message removal ([upstream #8612](https://github.com/earendil-works/pi/issues/8612))
   and retains image content lost by the destructive queue API. Remove the corresponding workaround

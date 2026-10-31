@@ -135,7 +135,8 @@ export type TemplateReadLocation =
 	| { projectId: string; workspaceId?: never }
 	| { workspaceId?: never; projectId?: never };
 
-export const PROTOCOL_VERSION = 102;
+export const PROTOCOL_VERSION = 103;
+export const CUSTOM_ENDPOINT_LIMITS_PROTOCOL_VERSION = 103;
 export const FONTS_PROTOCOL_VERSION = 102;
 export const CUSTOM_ENDPOINTS_PROTOCOL_VERSION = 101;
 export const PI_PACKAGES_PROTOCOL_VERSION = 100;
@@ -359,6 +360,7 @@ export const WS_METHODS = {
 	customEndpointsProbe: "customEndpoints.probe",
 	customEndpointsSave: "customEndpoints.save",
 	customEndpointsRemove: "customEndpoints.remove",
+	customEndpointsTest: "customEndpoints.test",
 	modelClampThinking: "model.clampThinking",
 	providerStatus: "provider.status",
 	providerDetect: "provider.detect",
@@ -647,6 +649,7 @@ export interface CustomEndpoint {
 	name: string;
 	baseUrl: string;
 	hasApiKey: boolean;
+	limits: CustomEndpointLimits;
 	models: CustomEndpointModel[];
 }
 
@@ -676,7 +679,63 @@ export interface CustomEndpointDraft {
 	baseUrl: string;
 	/** Omitted to keep the saved key; an empty string removes it. */
 	apiKey?: string;
+	/** Omitted to keep the saved limits. */
+	limits?: CustomEndpointLimits;
 	models: CustomEndpointModel[];
+}
+
+/** ThinkRail-side request limits for one endpoint; `null` leaves pi's behaviour in force. */
+export interface CustomEndpointLimits {
+	maxConcurrency: number | null;
+	timeoutSeconds: number | null;
+	maxRetries: number | null;
+}
+
+export const CUSTOM_ENDPOINT_CONCURRENCY_LIMITS = { min: 1, max: 256 } as const;
+export const CUSTOM_ENDPOINT_TIMEOUT_LIMITS = { min: 10, max: 3_600 } as const;
+export const CUSTOM_ENDPOINT_RETRY_LIMITS = { min: 0, max: 10 } as const;
+export const CUSTOM_ENDPOINT_TEST_MIN_BUDGET_MS = 180_000;
+
+function wholeIn(value: unknown, limits: { min: number; max: number }): value is number {
+	return (
+		typeof value === "number" &&
+		Number.isSafeInteger(value) &&
+		value >= limits.min &&
+		value <= limits.max
+	);
+}
+
+export function isEndpointConcurrency(value: unknown): value is number {
+	return wholeIn(value, CUSTOM_ENDPOINT_CONCURRENCY_LIMITS);
+}
+
+export function isEndpointTimeoutSeconds(value: unknown): value is number {
+	return wholeIn(value, CUSTOM_ENDPOINT_TIMEOUT_LIMITS);
+}
+
+export function isEndpointRetries(value: unknown): value is number {
+	return wholeIn(value, CUSTOM_ENDPOINT_RETRY_LIMITS);
+}
+
+/** The longest `customEndpoints.test` may take on the host; a client waits at least this long. */
+export function customEndpointTestBudgetMs(limits: CustomEndpointLimits): number {
+	const perAttempt = Math.max(
+		CUSTOM_ENDPOINT_TEST_MIN_BUDGET_MS,
+		(limits.timeoutSeconds ?? 0) * 1_000,
+	);
+	return perAttempt * ((limits.maxRetries ?? 0) + 1);
+}
+
+/** `skipped` on `chat` means every parallel slot of the endpoint was busy, so nothing was sent. */
+export type CustomEndpointCheck = "ok" | "failed" | "skipped";
+
+export interface CustomEndpointTestResult {
+	chat: CustomEndpointCheck;
+	/** `failed` without `message` means the model answered in text instead of calling the tool. */
+	tools: CustomEndpointCheck;
+	latencyMs: number | null;
+	outputTokensPerSecond: number | null;
+	message: string | null;
 }
 
 export function isSharedModelContextTarget(
@@ -1085,6 +1144,10 @@ export interface WsMethodMap {
 	"customEndpoints.probe": { params: CustomEndpointProbeRequest; result: CustomEndpointProbe };
 	"customEndpoints.save": { params: CustomEndpointDraft; result: CustomEndpoint[] };
 	"customEndpoints.remove": { params: { id: string }; result: CustomEndpoint[] };
+	"customEndpoints.test": {
+		params: { id: string; modelId: string };
+		result: CustomEndpointTestResult;
+	};
 	"provider.status": { params: Record<string, never>; result: ProviderStatusReport };
 	"provider.detect": { params: Record<string, never>; result: { accounts: DetectedAccount[] } };
 	"provider.loginStart": {

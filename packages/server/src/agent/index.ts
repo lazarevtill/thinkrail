@@ -22,6 +22,7 @@ export {
 	runReviewSubagent,
 	setSubagentConcurrencyResolver,
 } from "./delegation";
+export { testCustomEndpoint } from "./endpointTest";
 export {
 	type BundledExtensionFactory,
 	type BundledExtensions,

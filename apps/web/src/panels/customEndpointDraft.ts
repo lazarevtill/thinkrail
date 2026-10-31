@@ -1,8 +1,12 @@
-import type {
-	CustomEndpoint,
-	CustomEndpointDraft,
-	CustomEndpointModel,
-	CustomEndpointProbe,
+import {
+	type CustomEndpoint,
+	type CustomEndpointDraft,
+	type CustomEndpointLimits,
+	type CustomEndpointModel,
+	type CustomEndpointProbe,
+	isEndpointConcurrency,
+	isEndpointRetries,
+	isEndpointTimeoutSeconds,
 } from "@thinkrail/contracts";
 import type { Translator } from "@thinkrail/locales/react";
 
@@ -18,6 +22,9 @@ export interface EndpointDraft {
 	hasSavedKey: boolean;
 	removeKey: boolean;
 	savedBaseUrl: string | null;
+	concurrencyText: string;
+	timeoutText: string;
+	retriesText: string;
 	models: EndpointModelRow[];
 }
 
@@ -28,6 +35,42 @@ export const LOCAL_SERVER_PRESETS = [
 	{ name: "llama.cpp", baseUrl: "http://127.0.0.1:8080/v1" },
 ] as const;
 
+function numberText(value: number | null): string {
+	return value === null ? "" : String(value);
+}
+
+function wholeNumber(text: string): number | null {
+	return /^\d+$/.test(text.trim()) ? Number(text.trim()) : null;
+}
+
+function optionalValid(text: string, valid: (value: number) => boolean): boolean {
+	if (text.trim() === "") return true;
+	const value = wholeNumber(text);
+	return value !== null && valid(value);
+}
+
+export interface LimitIssues {
+	concurrency: boolean;
+	timeout: boolean;
+	retries: boolean;
+}
+
+export function limitIssues(draft: EndpointDraft): LimitIssues {
+	return {
+		concurrency: !optionalValid(draft.concurrencyText, isEndpointConcurrency),
+		timeout: !optionalValid(draft.timeoutText, isEndpointTimeoutSeconds),
+		retries: !optionalValid(draft.retriesText, isEndpointRetries),
+	};
+}
+
+export function draftLimits(draft: EndpointDraft): CustomEndpointLimits {
+	return {
+		maxConcurrency: wholeNumber(draft.concurrencyText),
+		timeoutSeconds: wholeNumber(draft.timeoutText),
+		maxRetries: wholeNumber(draft.retriesText),
+	};
+}
+
 export function newEndpointDraft(): EndpointDraft {
 	return {
 		name: "",
@@ -36,6 +79,9 @@ export function newEndpointDraft(): EndpointDraft {
 		hasSavedKey: false,
 		removeKey: false,
 		savedBaseUrl: null,
+		concurrencyText: "",
+		timeoutText: "",
+		retriesText: "",
 		models: [],
 	};
 }
@@ -49,6 +95,9 @@ export function editEndpointDraft(endpoint: CustomEndpoint): EndpointDraft {
 		hasSavedKey: endpoint.hasApiKey,
 		removeKey: false,
 		savedBaseUrl: endpoint.baseUrl,
+		concurrencyText: numberText(endpoint.limits.maxConcurrency),
+		timeoutText: numberText(endpoint.limits.timeoutSeconds),
+		retriesText: numberText(endpoint.limits.maxRetries),
 		models: endpoint.models.map((model) => ({ ...model, selected: true })),
 	};
 }
@@ -112,13 +161,14 @@ export function probeTarget(draft: EndpointDraft): { apiKey?: string; endpointId
 	return { endpointId: draft.id };
 }
 
-export function draftParams(draft: EndpointDraft): CustomEndpointDraft {
+export function draftParams(draft: EndpointDraft, withLimits: boolean): CustomEndpointDraft {
 	const key = draft.removeKey ? "" : draft.apiKey.trim() || (draft.id ? undefined : "");
 	return {
 		...(draft.id ? { id: draft.id } : {}),
 		name: draft.name.trim(),
 		baseUrl: draft.baseUrl.trim(),
 		...(key === undefined ? {} : { apiKey: key }),
+		...(withLimits ? { limits: draftLimits(draft) } : {}),
 		models: draft.models
 			.filter((model) => model.selected)
 			.map(({ selected: _selected, ...model }) => model),
@@ -138,8 +188,12 @@ export function addressMoved(draft: EndpointDraft): boolean {
 }
 
 export function canSave(draft: EndpointDraft): boolean {
+	const issues = limitIssues(draft);
 	return (
 		!addressMoved(draft) &&
+		!issues.concurrency &&
+		!issues.timeout &&
+		!issues.retries &&
 		draft.name.trim() !== "" &&
 		draft.baseUrl.trim() !== "" &&
 		draft.models.some((model) => model.selected)

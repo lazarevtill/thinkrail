@@ -8,10 +8,20 @@ import {
 	type CustomEndpointProbeFailure,
 	type CustomEndpointProbeRequest,
 	isCustomEndpointId,
+	isEndpointConcurrency,
+	isEndpointRetries,
+	isEndpointTimeoutSeconds,
 } from "@thinkrail/contracts";
 import { applyEdits, getNodeValue, modify, type Node } from "jsonc-parser";
 import { logger } from "../log";
 import { usePiRuntime } from "./agentSessionManager";
+import {
+	type EndpointLimits,
+	endpointLimitsOf,
+	readEndpointLimits,
+	toEndpointLimits,
+	writeEndpointLimits,
+} from "./endpointLimits";
 import {
 	MODELS_JSON_FORMATTING,
 	modelsPath,
@@ -22,6 +32,7 @@ import {
 	splitModelsSource,
 	writeModelsFile,
 } from "./modelsFile";
+import { forgetRequestGate } from "./requestLimits";
 
 const log = logger("agent");
 
@@ -331,6 +342,7 @@ function readEndpoints(config: Node | undefined): CustomEndpoint[] {
 				name: typeof provider.name === "string" && provider.name ? provider.name : id,
 				baseUrl: provider.baseUrl,
 				hasApiKey: apiKey !== undefined && apiKey !== NO_KEY,
+				limits: endpointLimitsOf(id),
 				models: provider.models.flatMap((model) => readModel(model, overrides) ?? []),
 			},
 		];
@@ -377,6 +389,16 @@ function validateDraft(draft: CustomEndpointDraft): void {
 	if (draft.apiKey !== undefined && typeof draft.apiKey !== "string")
 		throw new Error("The API key must be text.");
 	if (!draft.name.trim()) throw new Error("Name the server.");
+	if (draft.limits !== undefined) {
+		const limits = draft.limits;
+		if (
+			!isObject(limits) ||
+			(limits.maxConcurrency !== null && !isEndpointConcurrency(limits.maxConcurrency)) ||
+			(limits.timeoutSeconds !== null && !isEndpointTimeoutSeconds(limits.timeoutSeconds)) ||
+			(limits.maxRetries !== null && !isEndpointRetries(limits.maxRetries))
+		)
+			throw new Error("Parallel requests, timeout and retries must be whole numbers in range.");
+	}
 	if (!parseBaseUrl(draft.baseUrl))
 		throw new Error("Enter a full http:// or https:// address without credentials or a query.");
 	if (!Array.isArray(draft.models) || draft.models.length === 0)
@@ -513,25 +535,38 @@ function providerConfig(draft: CustomEndpointDraft, previous: Json | undefined):
 	return next;
 }
 
-function commit(edit: (body: string, config: Node | undefined) => string | null) {
+type Edit = { body: string; id: string; limits?: EndpointLimits | null };
+
+function commit(edit: (body: string, config: Node | undefined) => Edit | null) {
 	return serializeModelsWrite(() =>
 		usePiRuntime(async (runtime) => {
 			const path = modelsPath();
 			const source = readModelsSource(path);
 			const config = parseModelsConfig(source);
 			const { bom, body } = splitModelsSource(source);
-			const edited = edit(body, config);
-			if (edited === null) return readEndpoints(config);
-			const next = bom + edited;
+			const result = edit(body, config);
+			if (result === null) return readEndpoints(config);
+			const next = bom + result.body;
+			const previousLimits = readEndpointLimits()[result.id] ?? null;
+			const limitsChanged =
+				result.limits !== undefined &&
+				JSON.stringify(previousLimits) !== JSON.stringify(result.limits);
+			if (limitsChanged) writeEndpointLimits(result.id, result.limits ?? null);
 			if (next !== source) {
-				writeModelsFile(path, next);
+				try {
+					writeModelsFile(path, next);
+				} catch (error) {
+					if (limitsChanged) writeEndpointLimits(result.id, previousLimits);
+					throw error;
+				}
 				await runtime
 					.refresh({ allowNetwork: false })
 					.catch((error: unknown) =>
 						log.warn("pi runtime refresh after a custom endpoint save failed", error),
 					);
-				publishModelsFileChange();
 			}
+			if (next !== source || limitsChanged) publishModelsFileChange();
+			if (result.limits === null) forgetRequestGate(result.id);
 			return readEndpoints(parseModelsConfig(next));
 		}),
 	);
@@ -549,13 +584,21 @@ export function saveCustomEndpoint(draft: CustomEndpointDraft): Promise<CustomEn
 		const id = draft.id ?? newEndpointId(draft.name, draft.baseUrl, config);
 		const previous = draft.id === undefined ? undefined : providersOf(config)[draft.id];
 		const value = providerConfig(draft, isObject(previous) ? previous : undefined);
-		return applyEdits(body, modify(body, ["providers", id], value, MODELS_JSON_FORMATTING));
+		return {
+			body: applyEdits(body, modify(body, ["providers", id], value, MODELS_JSON_FORMATTING)),
+			id,
+			...(draft.limits === undefined ? {} : { limits: toEndpointLimits(draft.limits) }),
+		};
 	});
 }
 
 export function removeCustomEndpoint(id: string): Promise<CustomEndpoint[]> {
 	return commit((body, config) => {
 		if (!readEndpoints(config).some((endpoint) => endpoint.id === id)) return null;
-		return applyEdits(body, modify(body, ["providers", id], undefined, MODELS_JSON_FORMATTING));
+		return {
+			body: applyEdits(body, modify(body, ["providers", id], undefined, MODELS_JSON_FORMATTING)),
+			id,
+			limits: null,
+		};
 	});
 }
