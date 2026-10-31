@@ -2,7 +2,9 @@ import { randomBytes } from "node:crypto";
 import {
 	CUSTOM_ENDPOINT_ID_PREFIX,
 	type CustomEndpoint,
+	type CustomEndpointCost,
 	type CustomEndpointDraft,
+	type CustomEndpointKeyStatus,
 	type CustomEndpointModel,
 	type CustomEndpointProbe,
 	type CustomEndpointProbeFailure,
@@ -10,6 +12,7 @@ import {
 	isCustomEndpointId,
 	isEndpointConcurrency,
 	isEndpointRetries,
+	isEndpointTag,
 	isEndpointTimeoutSeconds,
 } from "@thinkrail/contracts";
 import { applyEdits, getNodeValue, modify, type Node } from "jsonc-parser";
@@ -17,11 +20,13 @@ import { logger } from "../log";
 import { usePiRuntime } from "./agentSessionManager";
 import {
 	type EndpointLimits,
+	endpointGatewayOf,
 	endpointLimitsOf,
+	nextEndpointSettings,
 	readEndpointLimits,
-	toEndpointLimits,
 	writeEndpointLimits,
 } from "./endpointLimits";
+import { applyLiteLlmModelInfo, fetchLiteLlmKeyStatus, fetchLiteLlmModelInfo } from "./liteLlm";
 import {
 	MODELS_JSON_FORMATTING,
 	modelsPath,
@@ -304,7 +309,29 @@ export async function probeCustomEndpoint(
 	const models = parseModelList(listing.json);
 	if (models === null) return { ok: false, reason: "not-openai" };
 	if (models.length === 0) return { ok: false, reason: "no-models" };
-	return { ok: true, baseUrl, models: await enrich(baseUrl, key, models) };
+	const [enriched, liteLlm] = await Promise.all([
+		enrich(baseUrl, key, models),
+		fetchLiteLlmModelInfo(baseUrl, key),
+	]);
+	if (!liteLlm) return { ok: true, baseUrl, models: enriched };
+	const gatewayModels = applyLiteLlmModelInfo(enriched, liteLlm);
+	if (gatewayModels.length === 0) return { ok: false, reason: "no-models" };
+	return {
+		ok: true,
+		baseUrl,
+		models: gatewayModels,
+		gateway: { kind: "litellm", key: await fetchLiteLlmKeyStatus(baseUrl, key) },
+	};
+}
+
+/** Fork: the saved key's own LiteLLM status, for an endpoint saved as a LiteLLM gateway. */
+export async function customEndpointKeyStatus(id: string): Promise<CustomEndpointKeyStatus | null> {
+	if (typeof id !== "string" || endpointGatewayOf(id)?.kind !== "litellm") return null;
+	const provider = providersOf(parseModelsConfig(readModelsSource(modelsPath())))[id];
+	if (!isObject(provider) || typeof provider.baseUrl !== "string") return null;
+	const baseUrl = parseBaseUrl(provider.baseUrl);
+	if (!baseUrl) return null;
+	return fetchLiteLlmKeyStatus(baseUrl, savedKey(id, baseUrl));
 }
 
 function readModel(raw: unknown, overrides: Json): CustomEndpointModel | undefined {
@@ -312,8 +339,10 @@ function readModel(raw: unknown, overrides: Json): CustomEndpointModel | undefin
 	const override = overrides[raw.id];
 	const model = isObject(override) ? { ...raw, ...override } : raw;
 	const compat = isObject(override) && isObject(override.compat) ? override.compat : raw.compat;
+	const cost = readCost(model.cost);
 	return {
 		id: raw.id,
+		...(cost ? { cost } : {}),
 		contextWindow: positiveInt(model.contextWindow),
 		maxTokens: positiveInt(model.maxTokens),
 		reasoning: typeof model.reasoning === "boolean" ? model.reasoning : null,
@@ -322,6 +351,24 @@ function readModel(raw: unknown, overrides: Json): CustomEndpointModel | undefin
 		chatTemplateThinking:
 			isObject(compat) && compat.thinkingFormat === CHAT_TEMPLATE_THINKING ? true : null,
 	};
+}
+
+function readCost(value: unknown): CustomEndpointCost | null {
+	if (!isObject(value)) return null;
+	const { input, output, cacheRead, cacheWrite } = value;
+	if (!isPrice(input) || !isPrice(output) || !isPrice(cacheRead) || !isPrice(cacheWrite))
+		return null;
+	return input > 0 || output > 0 ? { input, output, cacheRead, cacheWrite } : null;
+}
+
+function isPrice(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isCost(value: unknown): boolean {
+	if (value === undefined || value === null) return true;
+	if (!isObject(value)) return false;
+	return [value.input, value.output, value.cacheRead, value.cacheWrite].every(isPrice);
 }
 
 function providersOf(config: Node | undefined): Json {
@@ -343,6 +390,7 @@ function readEndpoints(config: Node | undefined): CustomEndpoint[] {
 				baseUrl: provider.baseUrl,
 				hasApiKey: apiKey !== undefined && apiKey !== NO_KEY,
 				limits: endpointLimitsOf(id),
+				gateway: endpointGatewayOf(id),
 				models: provider.models.flatMap((model) => readModel(model, overrides) ?? []),
 			},
 		];
@@ -399,6 +447,17 @@ function validateDraft(draft: CustomEndpointDraft): void {
 		)
 			throw new Error("Parallel requests, timeout and retries must be whole numbers in range.");
 	}
+	if (draft.gateway !== undefined && draft.gateway !== null) {
+		const gateway = draft.gateway;
+		if (
+			!isObject(gateway) ||
+			gateway.kind !== "litellm" ||
+			typeof gateway.sessionAffinity !== "boolean" ||
+			!Array.isArray(gateway.tags) ||
+			!gateway.tags.every(isEndpointTag)
+		)
+			throw new Error("Gateway tags may use letters, digits and . _ : / @ - only.");
+	}
 	if (!parseBaseUrl(draft.baseUrl))
 		throw new Error("Enter a full http:// or https:// address without credentials or a query.");
 	if (!Array.isArray(draft.models) || draft.models.length === 0)
@@ -417,6 +476,7 @@ function validateDraft(draft: CustomEndpointDraft): void {
 			!isFlag(model.chatTemplateThinking ?? null)
 		)
 			throw new Error("Model capabilities must be on or off.");
+		if (!isCost(model.cost)) throw new Error("Model prices must be non-negative numbers.");
 	}
 }
 
@@ -432,7 +492,7 @@ function modelConfig(model: CustomEndpointModel, previous: Json | undefined): Js
 		...(previous ?? {}),
 		id: model.id,
 		name: typeof previous?.name === "string" ? previous.name : model.id,
-		cost: isObject(previous?.cost) ? previous.cost : ZERO_COST,
+		cost: model.cost ? model.cost : isObject(previous?.cost) ? previous.cost : ZERO_COST,
 	};
 	if (model.reasoning === null) delete next.reasoning;
 	else next.reasoning = model.reasoning;
@@ -587,9 +647,14 @@ export function saveCustomEndpoint(draft: CustomEndpointDraft): Promise<CustomEn
 		return {
 			body: applyEdits(body, modify(body, ["providers", id], value, MODELS_JSON_FORMATTING)),
 			id,
-			...(draft.limits === undefined ? {} : { limits: toEndpointLimits(draft.limits) }),
+			...settingsEdit(id, draft),
 		};
 	});
+}
+
+function settingsEdit(id: string, draft: CustomEndpointDraft): { limits?: EndpointLimits | null } {
+	const next = nextEndpointSettings(id, draft.limits, draft.gateway);
+	return next === undefined ? {} : { limits: next };
 }
 
 export function removeCustomEndpoint(id: string): Promise<CustomEndpoint[]> {

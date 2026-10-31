@@ -1,4 +1,5 @@
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { CustomEndpointGateway } from "@thinkrail/contracts";
 import { readEndpointLimits } from "./endpointLimits";
 
 type Fetch = typeof globalThis.fetch;
@@ -148,12 +149,36 @@ export function limitedFetch(
 	return wrapped;
 }
 
-type RequestOptions = { fetch?: Fetch; timeoutMs?: number; maxRetries?: number } | undefined;
+type RequestOptions =
+	| {
+			fetch?: Fetch;
+			timeoutMs?: number;
+			maxRetries?: number;
+			sessionId?: string;
+			headers?: Record<string, string | null>;
+	  }
+	| undefined;
+
+export const LITELLM_SESSION_HEADER = "x-litellm-session-id";
+export const LITELLM_TAGS_HEADER = "x-litellm-tags";
+
+function gatewayHeaders(
+	gateway: CustomEndpointGateway | undefined,
+	sessionId: string | undefined,
+): Record<string, string> {
+	const headers: Record<string, string> = {};
+	if (gateway?.kind !== "litellm") return headers;
+	if (gateway.sessionAffinity && sessionId) headers[LITELLM_SESSION_HEADER] = sessionId;
+	if (gateway.tags.length > 0) headers[LITELLM_TAGS_HEADER] = gateway.tags.join(",");
+	return headers;
+}
 
 export function withEndpointOptions<T extends RequestOptions>(providerId: string, options: T): T {
 	const settings = readEndpointLimits()[providerId];
 	if (!settings) return options;
 	const next: NonNullable<RequestOptions> = { ...(options ?? {}) };
+	const added = gatewayHeaders(settings.gateway, next.sessionId);
+	if (Object.keys(added).length > 0) next.headers = { ...added, ...(next.headers ?? {}) };
 	if (settings.maxRetries !== undefined && next.maxRetries !== 0)
 		next.maxRetries = settings.maxRetries;
 	const timeoutMs =

@@ -7,10 +7,12 @@ import {
 	canSave,
 	draftParams,
 	editEndpointDraft,
+	keyAlerts,
 	LOCAL_SERVER_PRESETS,
 	limitIssues,
 	mergeProbe,
 	newEndpointDraft,
+	parseTags,
 	probeTarget,
 } from "./customEndpointDraft";
 
@@ -33,6 +35,7 @@ const saved = {
 	baseUrl: "https://gw.example/v1",
 	hasApiKey: true,
 	limits: { maxConcurrency: null, timeoutSeconds: null, maxRetries: null },
+	gateway: null,
 	models: [model("a", { contextWindow: 8_000, maxTokens: 2_000 }), model("manual")],
 };
 
@@ -110,15 +113,15 @@ test("save sends selected models, keeps a saved key unless replaced or removed",
 		...editEndpointDraft(saved),
 		models: editEndpointDraft(saved).models.map((row) => ({ ...row, selected: row.id === "a" })),
 	};
-	expect(draftParams(draft, false)).toEqual({
+	expect(draftParams(draft, 0)).toEqual({
 		id: "custom-gw",
 		name: "Gateway",
 		baseUrl: "https://gw.example/v1",
 		models: [model("a", { contextWindow: 8_000, maxTokens: 2_000 })],
 	});
-	expect(draftParams({ ...draft, apiKey: " sk-new " }, false).apiKey).toBe("sk-new");
-	expect(draftParams({ ...draft, removeKey: true }, false).apiKey).toBe("");
-	expect(draftParams(newEndpointDraft(), false).apiKey).toBe("");
+	expect(draftParams({ ...draft, apiKey: " sk-new " }, 0).apiKey).toBe("sk-new");
+	expect(draftParams({ ...draft, removeKey: true }, 0).apiKey).toBe("");
+	expect(draftParams(newEndpointDraft(), 0).apiKey).toBe("");
 });
 
 test("manual ids are trimmed, deduplicated and selected; saving needs a name, address and a model", () => {
@@ -175,7 +178,7 @@ test("a re-detect keeps a chat-template thinking fact the server stopped reporti
 		models: [model("hybrid", { contextWindow: 16_384 })],
 	});
 	expect(merged.models[0]).toMatchObject({ chatTemplateThinking: true, contextWindow: 16_384 });
-	expect(draftParams(merged, false).models[0]?.chatTemplateThinking).toBe(true);
+	expect(draftParams(merged, 0).models[0]?.chatTemplateThinking).toBe(true);
 	expect(addManualModel(merged, "new").models.at(-1)?.chatTemplateThinking).toBeNull();
 });
 
@@ -185,14 +188,14 @@ test("fork: request limits load from the endpoint, validate as whole numbers and
 		limits: { maxConcurrency: 2, timeoutSeconds: null, maxRetries: 0 },
 	});
 	expect(draft).toMatchObject({ concurrencyText: "2", timeoutText: "", retriesText: "0" });
-	expect(draftParams(draft, true).limits).toEqual({
+	expect(draftParams(draft, 103).limits).toEqual({
 		maxConcurrency: 2,
 		timeoutSeconds: null,
 		maxRetries: 0,
 	});
-	expect(draftParams(draft, false)).not.toHaveProperty("limits");
+	expect(draftParams(draft, 0)).not.toHaveProperty("limits");
 	const cleared = { ...draft, concurrencyText: " ", retriesText: "" };
-	expect(draftParams(cleared, true).limits).toEqual({
+	expect(draftParams(cleared, 103).limits).toEqual({
 		maxConcurrency: null,
 		timeoutSeconds: null,
 		maxRetries: null,
@@ -208,6 +211,94 @@ test("fork: request limits load from the endpoint, validate as whole numbers and
 		expect(Object.values(limitIssues(bad))).toContain(true);
 		expect(canSave(bad)).toBe(false);
 	}
-	expect(limitIssues(draft)).toEqual({ concurrency: false, timeout: false, retries: false });
+	expect(limitIssues(draft)).toEqual({
+		concurrency: false,
+		timeout: false,
+		retries: false,
+		tags: false,
+	});
 	expect(canSave(draft)).toBe(true);
+});
+
+const LITELLM_PROBE = {
+	ok: true as const,
+	baseUrl: "https://llm.corp.example/v1",
+	models: [
+		model("qwen", {
+			contextWindow: 131_072,
+			tools: true,
+			cost: { input: 0.2, output: 0.6, cacheRead: 0, cacheWrite: 0 },
+		}),
+	],
+	gateway: {
+		kind: "litellm" as const,
+		key: {
+			alias: "till-laptop",
+			spend: 1.5,
+			maxBudget: 50,
+			budgetResetAt: null,
+			expiresAt: null,
+			rpmLimit: 60,
+			tpmLimit: null,
+			maxParallelRequests: 4,
+		},
+	},
+};
+
+test("fork: a LiteLLM probe turns on gateway options, fills parallel requests from the key and keeps prices", () => {
+	const merged = mergeProbe(newEndpointDraft(), LITELLM_PROBE);
+	expect(merged.gateway).toEqual({ sessionAffinity: true, tagsText: "thinkrail" });
+	expect(merged.concurrencyText).toBe("4");
+	expect(merged.models[0]?.cost).toEqual({ input: 0.2, output: 0.6, cacheRead: 0, cacheWrite: 0 });
+	const typed = mergeProbe({ ...newEndpointDraft(), concurrencyText: "2" }, LITELLM_PROBE);
+	expect(typed.concurrencyText).toBe("2");
+	const edited = mergeProbe(
+		{ ...merged, gateway: { sessionAffinity: false, tagsText: "team:ai" } },
+		LITELLM_PROBE,
+	);
+	expect(edited.gateway).toEqual({ sessionAffinity: false, tagsText: "team:ai" });
+	const plain = mergeProbe(newEndpointDraft(), {
+		ok: true,
+		baseUrl: "http://h/v1",
+		models: [model("a")],
+	});
+	expect(plain.gateway).toBeNull();
+	const params = draftParams({ ...merged, name: "Gateway" }, 104);
+	expect(params.gateway).toEqual({ kind: "litellm", sessionAffinity: true, tags: ["thinkrail"] });
+	expect(draftParams({ ...merged, name: "Gateway" }, 103)).not.toHaveProperty("gateway");
+	expect(draftParams({ ...plain, name: "Local" }, 104).gateway).toBeNull();
+});
+
+test("fork: gateway tags split on commas and spaces, dedupe, and block a save when invalid", () => {
+	expect(parseTags(" team:ai, thinkrail  env/prod,,thinkrail ")).toEqual([
+		"team:ai",
+		"thinkrail",
+		"env/prod",
+	]);
+	const draft = mergeProbe({ ...newEndpointDraft(), name: "Gateway" }, LITELLM_PROBE);
+	expect(canSave(draft)).toBe(true);
+	const bad = { ...draft, gateway: { sessionAffinity: true, tagsText: "ok, not;ok" } };
+	expect(limitIssues(bad).tags).toBe(true);
+	expect(canSave(bad)).toBe(false);
+	const many = {
+		...draft,
+		gateway: {
+			sessionAffinity: true,
+			tagsText: Array.from({ length: 11 }, (_, i) => `t${i}`).join(","),
+		},
+	};
+	expect(limitIssues(many).tags).toBe(true);
+});
+
+test("fork: key alerts flag a nearly spent or spent budget and a key close to or past expiry", () => {
+	const now = Date.parse("2026-11-01T12:00:00Z");
+	const key = LITELLM_PROBE.gateway.key;
+	expect(keyAlerts(key, now)).toEqual({ budget: null, expiry: null });
+	expect(keyAlerts({ ...key, spend: 45 }, now).budget).toBe("near");
+	expect(keyAlerts({ ...key, spend: 50 }, now).budget).toBe("exhausted");
+	expect(keyAlerts({ ...key, maxBudget: null, spend: 900 }, now).budget).toBeNull();
+	expect(keyAlerts({ ...key, expiresAt: "2026-11-05T00:00:00Z" }, now).expiry).toBe("soon");
+	expect(keyAlerts({ ...key, expiresAt: "2026-12-30T00:00:00Z" }, now).expiry).toBeNull();
+	expect(keyAlerts({ ...key, expiresAt: "2026-10-30T00:00:00Z" }, now).expiry).toBe("expired");
+	expect(keyAlerts({ ...key, expiresAt: "not a date" }, now).expiry).toBeNull();
 });

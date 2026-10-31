@@ -812,7 +812,13 @@ a project picker, the prompt hero, and the reused
   values mark the field invalid, show the range and disable Save); the endpoint row appends a limits
   summary and lists its models, each with a **Test** button (`customEndpoints.test`, waiting
   `customEndpointTestBudgetMs` plus a reply margin) whose result line shows chat / tool calls / latency /
-  tok/s, or that every parallel slot is busy; and
+  tok/s, or that every parallel slot is busy. Fork, from v104: a model row also shows its price when
+  the gateway reports one; once Detect finds a LiteLLM proxy the dialog shows a **LiteLLM gateway**
+  fieldset — the probing key's status line, a **Send the chat's session id** switch (on by default)
+  and comma-separated **Tags** (default `thinkrail`, invalid tags disable Save) — and an empty
+  Parallel requests field takes the key's `max_parallel_requests`. A gateway endpoint row re-reads
+  `customEndpoints.keyStatus` and shows spend of budget, reset, rate limits and expiry, in warning tone
+  at 90% of the budget or within a week of expiry (`keyAlerts` in `customEndpointDraft`); and
   the **`JetBrainsAiCard`** — route Central-supported models through the user's JetBrains subscription while
   keeping ThinkRail's embedded PI — a state machine over the typed `JbcentralStatus` +
   `provider.jbcentral*`: absent (official host-OS install guidance + Recheck), outdated — below the host's

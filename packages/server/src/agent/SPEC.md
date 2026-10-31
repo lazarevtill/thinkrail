@@ -226,6 +226,22 @@ re-opened transcripts provider-valid.
       (queue wait doesn't count against the timeout; a queued request can be aborted; a stalled or
       cancelled body frees its slot; nested dispatch isn't re-gated), the SDK timeout moved onto that
       `fetch`, and `maxRetries` (a caller's explicit `0` wins). See `pi-compatibility.md`.
+    - **LiteLLM gateways (fork, `liteLlm`).** Detect also asks the proxy root (the base URL without
+      `/v1`) for LiteLLM's `/model/info` with the probing key; a `{data: [{model_name, model_info}]}` reply
+      marks the server as a LiteLLM proxy. Its configured facts then win over listing guesses: a model
+      group takes the smallest `max_input_tokens` / `max_output_tokens` of its deployments and only the
+      `supports_function_calling` / `supports_vision` / `supports_reasoning` every reporting deployment
+      has (a request may land on any of them); wildcard routes (`openai/*`) and non-chat modes
+      (embedding, audio, image, rerank) are dropped; `input_cost_per_token` / `output_cost_per_token` /
+      cache costs become pi `cost` (USD per million tokens) and are written to `models.json`, so pi's
+      usage totals show real spend. The probe also returns the key's own `/key/info` (alias, spend,
+      budget, reset, expiry, rpm/tpm, parallel limit), and `customEndpointKeyStatus(id)` re-reads it with
+      the saved key (same narrow key rules as Detect) for an endpoint saved as a gateway. A gateway's
+      options — `sessionAffinity` and `tags` — live in the same sidecar entry as the limits, never in
+      `models.json`. The request wrapper adds `x-litellm-session-id: <pi sessionId>` when session
+      affinity is on (LiteLLM's sticky routing keeps a chat on one deployment so its prompt cache is
+      reused, and Langfuse groups the chat as one session) and `x-litellm-tags: a,b` for spend
+      attribution; a caller's own header of the same name wins.
     - **Agent check (fork).** `endpointTest.testCustomEndpoint(id, modelId)` sends one short chat and one
       forced `get_current_time` tool call through pi to a saved `custom-*` model and reports `chat` /
       `tools` (`ok` / `failed` / `skipped`), latency and output tokens per second. A busy gate (every
@@ -1137,7 +1153,8 @@ re-opened transcripts provider-valid.
   pre-bootstrap `configurePiRuntimeGenerationInitializer` composition seam; `listModelContextSettings` /
   `setModelContextWindow` (the `modelContext` adapter); `listCustomEndpoints` / `probeCustomEndpoint` /
   `saveCustomEndpoint` / `removeCustomEndpoint` (the `customEndpoints` adapter) and `testCustomEndpoint`
-  (fork: the agent check); `setModelsFilePublisher`
+  (fork: the agent check) and `customEndpointKeyStatus` (fork: a LiteLLM key's status);
+  `setModelsFilePublisher`
   (their shared `provider.changed` seam); `piLoginOptions` (pi login options
   carrying the lazily created installation device id, for `auth`);
   `completeOnce`/`pickModel` +

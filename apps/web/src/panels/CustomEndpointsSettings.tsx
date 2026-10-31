@@ -6,16 +6,19 @@ import {
 } from "@remixicon/react";
 import {
 	CUSTOM_ENDPOINT_CONCURRENCY_LIMITS,
+	CUSTOM_ENDPOINT_GATEWAY_PROTOCOL_VERSION,
 	CUSTOM_ENDPOINT_LIMITS_PROTOCOL_VERSION,
 	CUSTOM_ENDPOINT_RETRY_LIMITS,
+	CUSTOM_ENDPOINT_TAG_LIMITS,
 	CUSTOM_ENDPOINT_TIMEOUT_LIMITS,
 	CUSTOM_ENDPOINTS_PROTOCOL_VERSION,
 	type CustomEndpoint,
+	type CustomEndpointKeyStatus,
 	type CustomEndpointModel,
 	type CustomEndpointTestResult,
 	customEndpointTestBudgetMs,
 } from "@thinkrail/contracts";
-import { type Translator, useT } from "@thinkrail/locales/react";
+import { localeOf, type Translator, useT } from "@thinkrail/locales/react";
 import { Button, IconButton } from "@thinkrail/ui/button";
 import {
 	Dialog,
@@ -39,6 +42,8 @@ import {
 	draftParams,
 	type EndpointDraft,
 	editEndpointDraft,
+	type GatewayDraft,
+	keyAlerts,
 	LOCAL_SERVER_PRESETS,
 	limitIssues,
 	mergeProbe,
@@ -58,6 +63,174 @@ const TEST_REPLY_MARGIN_MS = 15_000;
 
 function supported(protocolVersion: number | null): boolean {
 	return protocolVersion !== null && protocolVersion >= CUSTOM_ENDPOINTS_PROTOCOL_VERSION;
+}
+
+function useGatewaySupported(): boolean {
+	const protocolVersion = useAppStore((state) => state.protocolVersion);
+	return protocolVersion !== null && protocolVersion >= CUSTOM_ENDPOINT_GATEWAY_PROTOCOL_VERSION;
+}
+
+function usd(t: Translator, value: number): string {
+	return new Intl.NumberFormat(localeOf(t), {
+		style: "currency",
+		currency: "USD",
+		minimumFractionDigits: 0,
+		maximumFractionDigits: value < 1 ? 4 : 2,
+	}).format(value);
+}
+
+function day(t: Translator, iso: string): string | null {
+	const time = Date.parse(iso);
+	return Number.isFinite(time)
+		? new Date(time).toLocaleDateString(localeOf(t), { month: "short", day: "numeric" })
+		: null;
+}
+
+function keyStatusText(t: Translator, status: CustomEndpointKeyStatus, now: number): string {
+	const alerts = keyAlerts(status, now);
+	const reset = status.budgetResetAt === null ? null : day(t, status.budgetResetAt);
+	const expiry = status.expiresAt === null ? null : day(t, status.expiresAt);
+	const parts = [
+		status.alias === null
+			? t("settings.customEndpoints.key.title")
+			: t("settings.customEndpoints.key.titleAlias", { alias: status.alias }),
+		status.spend === null
+			? null
+			: status.maxBudget === null
+				? t("settings.customEndpoints.key.spend", { spend: usd(t, status.spend) })
+				: t("settings.customEndpoints.key.spendOf", {
+						spend: usd(t, status.spend),
+						budget: usd(t, status.maxBudget),
+					}),
+		alerts.budget === "exhausted" ? t("settings.customEndpoints.key.budgetSpent") : null,
+		reset === null ? null : t("settings.customEndpoints.key.resets", { date: reset }),
+		status.rpmLimit === null
+			? null
+			: t("settings.customEndpoints.key.rpm", { count: status.rpmLimit }),
+		status.tpmLimit === null
+			? null
+			: t("settings.customEndpoints.key.tpm", { count: status.tpmLimit }),
+		status.maxParallelRequests === null
+			? null
+			: t("settings.customEndpoints.key.parallel", { count: status.maxParallelRequests }),
+		expiry === null
+			? null
+			: alerts.expiry === "expired"
+				? t("settings.customEndpoints.key.expired", { date: expiry })
+				: t("settings.customEndpoints.key.expires", { date: expiry }),
+	];
+	return parts.filter((part): part is string => part !== null).join(" · ");
+}
+
+function KeyStatusLine({ status, testId }: { status: CustomEndpointKeyStatus; testId: string }) {
+	const t = useT();
+	const [now] = useState(() => Date.now());
+	const alerts = keyAlerts(status, now);
+	const warn = alerts.budget !== null || alerts.expiry !== null;
+	return (
+		<p
+			data-testid={testId}
+			data-tone={warn ? "warning" : "ok"}
+			className={cn(
+				"break-words tr-text-metadata",
+				warn ? "text-feedback-warning" : "text-text-muted",
+			)}
+		>
+			{keyStatusText(t, status, now)}
+		</p>
+	);
+}
+
+function EndpointKeyStatus({ endpoint }: { endpoint: CustomEndpoint }) {
+	const [status, setStatus] = useState<CustomEndpointKeyStatus | null>(null);
+	const gateway = endpoint.gateway?.kind ?? null;
+	const { id, baseUrl, hasApiKey } = endpoint;
+	useEffect(() => {
+		setStatus(null);
+		if (gateway !== "litellm" || !hasApiKey || !baseUrl) return;
+		let live = true;
+		void getTransport()
+			.request("customEndpoints.keyStatus", { id })
+			.then((next) => {
+				if (live) setStatus(next);
+			})
+			.catch(() => {});
+		return () => {
+			live = false;
+		};
+	}, [id, baseUrl, hasApiKey, gateway]);
+	return status ? <KeyStatusLine status={status} testId="custom-endpoints-key-status" /> : null;
+}
+
+function GatewayFields({
+	gateway,
+	keyStatus,
+	invalid,
+	disabled,
+	onChange,
+}: {
+	gateway: GatewayDraft;
+	keyStatus: CustomEndpointKeyStatus | null;
+	invalid: boolean;
+	disabled: boolean;
+	onChange: (gateway: GatewayDraft) => void;
+}) {
+	const t = useT();
+	const id = useId();
+	return (
+		<fieldset
+			data-testid="custom-endpoints-gateway"
+			className="m-0 flex min-w-0 flex-col gap-8 border-0 p-0"
+		>
+			<legend className="mb-4 tr-title-compact text-text-default">
+				{t("settings.customEndpoints.gateway.title")}
+			</legend>
+			<p className="tr-text-metadata text-text-muted">
+				{t("settings.customEndpoints.gateway.detected")}
+			</p>
+			{keyStatus ? <KeyStatusLine status={keyStatus} testId="custom-endpoints-probe-key" /> : null}
+			<div className="flex items-center gap-8">
+				<span className="flex min-w-0 flex-1 flex-col gap-2">
+					<span className="tr-text-ui text-text-default">
+						{t("settings.customEndpoints.gateway.session")}
+					</span>
+					<span className="tr-text-metadata text-text-muted">
+						{t("settings.customEndpoints.gateway.sessionHint")}
+					</span>
+				</span>
+				<SettingsSwitch
+					checked={gateway.sessionAffinity}
+					disabled={disabled}
+					label={t("settings.customEndpoints.gateway.session")}
+					testId="custom-endpoints-session"
+					onChange={(sessionAffinity) => onChange({ ...gateway, sessionAffinity })}
+				/>
+			</div>
+			<div className="flex flex-col gap-4">
+				<label htmlFor={`${id}-tags`} className="tr-text-metadata text-text-muted">
+					{t("settings.customEndpoints.gateway.tags")}
+				</label>
+				<input
+					id={`${id}-tags`}
+					data-testid="custom-endpoints-tags"
+					className={cn(INPUT_CLASS, "tr-code-text", invalid && "border-feedback-error")}
+					value={gateway.tagsText}
+					disabled={disabled}
+					spellCheck={false}
+					aria-invalid={invalid}
+					onChange={(event) => onChange({ ...gateway, tagsText: event.currentTarget.value })}
+				/>
+				<p className="tr-text-metadata text-text-muted">
+					{t("settings.customEndpoints.gateway.tagsHint")}
+				</p>
+				{invalid ? (
+					<p className="tr-text-metadata text-feedback-error">
+						{t("settings.customEndpoints.gateway.tagsInvalid", CUSTOM_ENDPOINT_TAG_LIMITS)}
+					</p>
+				) : null}
+			</div>
+		</fieldset>
+	);
 }
 
 function useLimitsSupported(): boolean {
@@ -206,6 +379,12 @@ function ModelFacts({ model }: { model: CustomEndpointModel }) {
 		model.reasoning ? t("settings.customEndpoints.factThinking") : null,
 		model.vision ? t("settings.customEndpoints.factImages") : null,
 		model.tools === true ? t("settings.customEndpoints.factTools") : null,
+		model.cost
+			? t("settings.customEndpoints.factPrice", {
+					input: usd(t, model.cost.input),
+					output: usd(t, model.cost.output),
+				})
+			: null,
 	].filter((fact): fact is string => fact !== null);
 	if (facts.length === 0 && model.tools !== false) return null;
 	return (
@@ -240,6 +419,9 @@ function EndpointDialog({
 	const busy = probing || saving;
 	const autoDetected = useRef(false);
 	const limitsSupported = useLimitsSupported();
+	const gatewaySupported = useGatewaySupported();
+	const protocolVersion = useAppStore((state) => state.protocolVersion);
+	const [probeKey, setProbeKey] = useState<CustomEndpointKeyStatus | null>(null);
 
 	const detect = useCallback(
 		(current: EndpointDraft) => {
@@ -253,6 +435,7 @@ function EndpointDialog({
 						return;
 					}
 					setDraft((latest) => mergeProbe(latest, probe));
+					setProbeKey(probe.gateway?.key ?? null);
 					setStatus({
 						tone: "ok",
 						text: t("settings.customEndpoints.found", { count: probe.models.length }),
@@ -275,7 +458,7 @@ function EndpointDialog({
 		setSaving(true);
 		setStatus(null);
 		void getTransport()
-			.request("customEndpoints.save", draftParams(draft, limitsSupported))
+			.request("customEndpoints.save", draftParams(draft, protocolVersion))
 			.then((endpoints) => {
 				onSaved(endpoints);
 				onClose();
@@ -390,6 +573,15 @@ function EndpointDialog({
 					</Field>
 					{limitsSupported ? (
 						<LimitFields draft={draft} disabled={busy} onChange={setDraft} />
+					) : null}
+					{gatewaySupported && draft.gateway ? (
+						<GatewayFields
+							gateway={draft.gateway}
+							keyStatus={probeKey}
+							invalid={limitIssues(draft).tags}
+							disabled={busy}
+							onChange={(gateway) => setDraft((current) => ({ ...current, gateway }))}
+						/>
 					) : null}
 					<div className="flex flex-col gap-4">
 						<div className="flex items-center justify-between gap-8">
@@ -726,6 +918,7 @@ export function CustomEndpointsSettings({
 									})}
 									{limitsSupported ? ` · ${limitsSummary(t, endpoint)}` : null}
 								</span>
+								{endpoint.gateway ? <EndpointKeyStatus endpoint={endpoint} /> : null}
 							</div>
 							<Button
 								variant="ghost"

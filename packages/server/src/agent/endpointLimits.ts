@@ -1,9 +1,12 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+	CUSTOM_ENDPOINT_TAG_LIMITS,
+	type CustomEndpointGateway,
 	type CustomEndpointLimits,
 	isEndpointConcurrency,
 	isEndpointRetries,
+	isEndpointTag,
 	isEndpointTimeoutSeconds,
 } from "@thinkrail/contracts";
 import { dataDir } from "../persistence";
@@ -12,6 +15,7 @@ export interface EndpointLimits {
 	maxConcurrency?: number;
 	timeoutSeconds?: number;
 	maxRetries?: number;
+	gateway?: CustomEndpointGateway;
 }
 
 let cache: { path: string; endpoints: Record<string, EndpointLimits>; unreadable: boolean } | null =
@@ -31,7 +35,19 @@ function sanitize(value: unknown): EndpointLimits {
 	if (isEndpointConcurrency(value.maxConcurrency)) limits.maxConcurrency = value.maxConcurrency;
 	if (isEndpointTimeoutSeconds(value.timeoutSeconds)) limits.timeoutSeconds = value.timeoutSeconds;
 	if (isEndpointRetries(value.maxRetries)) limits.maxRetries = value.maxRetries;
+	const gateway = sanitizeGateway(value.gateway);
+	if (gateway) limits.gateway = gateway;
 	return limits;
+}
+
+export function sanitizeGateway(value: unknown): CustomEndpointGateway | null {
+	if (!isRecord(value) || value.kind !== "litellm") return null;
+	const tags = Array.isArray(value.tags) ? value.tags.filter(isEndpointTag) : [];
+	return {
+		kind: "litellm",
+		sessionAffinity: value.sessionAffinity === true,
+		tags: [...new Set(tags)].slice(0, CUSTOM_ENDPOINT_TAG_LIMITS.count),
+	};
 }
 
 export function readEndpointLimits(): Readonly<Record<string, EndpointLimits>> {
@@ -63,8 +79,23 @@ export function endpointLimitsOf(id: string): CustomEndpointLimits {
 	};
 }
 
-export function toEndpointLimits(limits: CustomEndpointLimits): EndpointLimits | null {
-	const next = sanitize(limits);
+export function endpointGatewayOf(id: string): CustomEndpointGateway | null {
+	return readEndpointLimits()[id]?.gateway ?? null;
+}
+
+/** The sidecar entry a save leaves: `undefined` parts keep what is saved, so `undefined` overall means no change. */
+export function nextEndpointSettings(
+	id: string,
+	limits: CustomEndpointLimits | undefined,
+	gateway: CustomEndpointGateway | null | undefined,
+): EndpointLimits | null | undefined {
+	if (limits === undefined && gateway === undefined) return undefined;
+	const saved = readEndpointLimits()[id] ?? {};
+	const { gateway: savedGateway, ...savedLimits } = saved;
+	const next = sanitize({
+		...(limits === undefined ? savedLimits : limits),
+		gateway: gateway === undefined ? savedGateway : gateway,
+	});
 	return Object.keys(next).length > 0 ? next : null;
 }
 

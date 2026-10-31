@@ -231,6 +231,11 @@ apart from the recorded selection. Run the manager's restart regressions on upgr
   pi. Re-check that the four methods still exist and that the options still reach the provider; run
   `endpointLimits.test.ts` (parallel queue, retries/timeout reaching pi, nested dispatch not re-gated,
   abort and stall release) and `e2e/settings-custom-endpoint-limits.spec.ts`.
+  The same wrapper adds a LiteLLM gateway's `x-litellm-session-id` (from `options.sessionId`) and
+  `x-litellm-tags` to `options.headers`; it relies on pi's agent passing its session id on every model
+  call and on the OpenAI-compatible provider merging `options.headers` into the request. Re-check both
+  with `liteLlm.test.ts` (headers reaching a fake proxy) and `e2e/settings-custom-endpoint-litellm.spec.ts`
+  (a real chat sending both).
 - **Image-only queued input** — [[submodule-server-agent]], queue projection. The host compensates for
   pi's text-only delivered-message removal ([upstream #8612](https://github.com/earendil-works/pi/issues/8612))
   and retains image content lost by the destructive queue API. Remove the corresponding workaround

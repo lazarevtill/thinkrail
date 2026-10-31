@@ -29,6 +29,7 @@ import {
 	clearQueueSession,
 	compactSession,
 	createSession,
+	customEndpointKeyStatus,
 	deleteSession,
 	disableAnthropicExtraUsageWarning,
 	ensureSessionAttached,
@@ -1277,6 +1278,7 @@ const handlers: WsHandlers = {
 	"customEndpoints.save": (p) => saveCustomEndpoint(p),
 	"customEndpoints.remove": (p) => removeCustomEndpoint(p.id),
 	"customEndpoints.test": (p) => testCustomEndpoint(p.id, p.modelId),
+	"customEndpoints.keyStatus": (p) => customEndpointKeyStatus(p.id),
 	"model.default": () =>
 		observeSetupRead(
 			() => resolveNewChatModel({}),

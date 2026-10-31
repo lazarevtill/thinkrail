@@ -16,6 +16,7 @@ import {
 	CHAT_RESOURCES_PROTOCOL_VERSION,
 	CLIENT_ERROR_REPORT_PROTOCOL_VERSION,
 	CONTEXT_WINDOW_SETTINGS_PROTOCOL_VERSION,
+	CUSTOM_ENDPOINT_GATEWAY_PROTOCOL_VERSION,
 	CUSTOM_ENDPOINT_ID_PREFIX,
 	CUSTOM_ENDPOINT_LIMITS_PROTOCOL_VERSION,
 	CUSTOM_ENDPOINTS_PROTOCOL_VERSION,
@@ -32,6 +33,7 @@ import {
 	isCustomEndpointId,
 	isEndpointConcurrency,
 	isEndpointRetries,
+	isEndpointTag,
 	isEndpointTimeoutSeconds,
 	isTodoReviewFixMessage,
 	isToolResponsePending,
@@ -570,7 +572,7 @@ test("custom endpoints are pinned to v101 and own only custom-* providers", () =
 
 test("fork: custom endpoint limits and the agent check ride v103", () => {
 	expect(CUSTOM_ENDPOINT_LIMITS_PROTOCOL_VERSION).toBe(103);
-	expect(PROTOCOL_VERSION).toBe(103);
+	expect(PROTOCOL_VERSION).toBeGreaterThanOrEqual(103);
 	expect(WS_METHODS.customEndpointsTest).toBe("customEndpoints.test");
 	expect(isEndpointConcurrency(4)).toBe(true);
 	expect(isEndpointConcurrency(0)).toBe(false);
@@ -584,4 +586,14 @@ test("fork: custom endpoint limits and the agent check ride v103", () => {
 	expect(
 		customEndpointTestBudgetMs({ maxConcurrency: 2, timeoutSeconds: 600, maxRetries: 2 }),
 	).toBe(1_800_000);
+});
+
+test("fork: LiteLLM gateway options and key status ride v104", () => {
+	expect(CUSTOM_ENDPOINT_GATEWAY_PROTOCOL_VERSION).toBe(104);
+	expect(PROTOCOL_VERSION).toBe(104);
+	expect(WS_METHODS.customEndpointsKeyStatus).toBe("customEndpoints.keyStatus");
+	for (const tag of ["thinkrail", "team:ai", "env/prod", "a.b_c-d@e"])
+		expect(isEndpointTag(tag)).toBe(true);
+	for (const tag of ["", "two words", "a,b", "x".repeat(65), 7])
+		expect(isEndpointTag(tag)).toBe(false);
 });

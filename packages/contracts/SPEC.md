@@ -673,7 +673,15 @@ default, narrow cross-ring guards, and the quit-confirmation rule both clients d
   keeps the saved ones, and a limits-only change also emits `provider.changed`.
   **`customEndpoints.test`** `{id, modelId}` → `CustomEndpointTestResult` (`chat` / `tools` as
   `CustomEndpointCheck` `ok` / `failed` / `skipped`, `latencyMs`, `outputTokensPerSecond`, `message`); a
-  client waits at least `customEndpointTestBudgetMs(limits)`) /
+  client waits at least `customEndpointTestBudgetMs(limits)`. Fork, v104
+  (`CUSTOM_ENDPOINT_GATEWAY_PROTOCOL_VERSION`): a model may carry `cost` (`CustomEndpointCost`, USD per
+  million tokens; absent or null keeps the saved cost); a successful probe of a LiteLLM proxy carries
+  `gateway: {kind: "litellm", key: CustomEndpointKeyStatus | null}`; every endpoint carries `gateway:
+  CustomEndpointGateway | null` (`{kind: "litellm", sessionAffinity, tags}`, tags checked by
+  `isEndpointTag` and bounded by `CUSTOM_ENDPOINT_TAG_LIMITS`), and a draft's `gateway` keeps the saved
+  options when omitted and drops them when null. **`customEndpoints.keyStatus`** `{id}` →
+  `CustomEndpointKeyStatus | null` (alias, spend, budget, reset and expiry timestamps, rpm/tpm and
+  parallel limits; each null when unreported)) /
   **`model.clampThinking`** (pi's
   `clampThinkingLevel` for a `{model, level}` pair — the pre-session picker's effort adjustment, so no
   client re-derives pi's policy) / **`provider.status`**

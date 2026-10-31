@@ -135,8 +135,9 @@ export type TemplateReadLocation =
 	| { projectId: string; workspaceId?: never }
 	| { workspaceId?: never; projectId?: never };
 
-export const PROTOCOL_VERSION = 103;
+export const PROTOCOL_VERSION = 104;
 export const CUSTOM_ENDPOINT_LIMITS_PROTOCOL_VERSION = 103;
+export const CUSTOM_ENDPOINT_GATEWAY_PROTOCOL_VERSION = 104;
 export const FONTS_PROTOCOL_VERSION = 102;
 export const CUSTOM_ENDPOINTS_PROTOCOL_VERSION = 101;
 export const PI_PACKAGES_PROTOCOL_VERSION = 100;
@@ -361,6 +362,7 @@ export const WS_METHODS = {
 	customEndpointsSave: "customEndpoints.save",
 	customEndpointsRemove: "customEndpoints.remove",
 	customEndpointsTest: "customEndpoints.test",
+	customEndpointsKeyStatus: "customEndpoints.keyStatus",
 	modelClampThinking: "model.clampThinking",
 	providerStatus: "provider.status",
 	providerDetect: "provider.detect",
@@ -641,6 +643,15 @@ export interface CustomEndpointModel {
 	tools: boolean | null;
 	/** The chat template turns thinking on and off through `enable_thinking` (llama.cpp reports it). */
 	chatTemplateThinking: boolean | null;
+	/** USD per million tokens as the gateway prices it (fork: LiteLLM); absent or null leaves the saved cost. */
+	cost?: CustomEndpointCost | null;
+}
+
+export interface CustomEndpointCost {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
 }
 
 /** An OpenAI-compatible `custom-*` provider in pi's `models.json`. The key itself never crosses the wire. */
@@ -650,6 +661,7 @@ export interface CustomEndpoint {
 	baseUrl: string;
 	hasApiKey: boolean;
 	limits: CustomEndpointLimits;
+	gateway: CustomEndpointGateway | null;
 	models: CustomEndpointModel[];
 }
 
@@ -669,7 +681,12 @@ export type CustomEndpointProbeFailure =
 	| "no-models";
 
 export type CustomEndpointProbe =
-	| { ok: true; baseUrl: string; models: CustomEndpointModel[] }
+	| {
+			ok: true;
+			baseUrl: string;
+			models: CustomEndpointModel[];
+			gateway?: CustomEndpointGatewayProbe | null;
+	  }
 	| { ok: false; reason: CustomEndpointProbeFailure; status?: number };
 
 export interface CustomEndpointDraft {
@@ -681,6 +698,8 @@ export interface CustomEndpointDraft {
 	apiKey?: string;
 	/** Omitted to keep the saved limits. */
 	limits?: CustomEndpointLimits;
+	/** Omitted to keep the saved gateway options; null drops them. */
+	gateway?: CustomEndpointGateway | null;
 	models: CustomEndpointModel[];
 }
 
@@ -724,6 +743,45 @@ export function customEndpointTestBudgetMs(limits: CustomEndpointLimits): number
 		(limits.timeoutSeconds ?? 0) * 1_000,
 	);
 	return perAttempt * ((limits.maxRetries ?? 0) + 1);
+}
+
+/** Fork: options for a LiteLLM proxy, sent as headers on every model request through it. */
+export interface CustomEndpointGateway {
+	kind: "litellm";
+	/** Sends the chat's session id as `x-litellm-session-id` (sticky routing, prompt-cache reuse, Langfuse sessions). */
+	sessionAffinity: boolean;
+	/** Sent comma-joined as `x-litellm-tags` for the gateway's spend tracking. */
+	tags: string[];
+}
+
+export interface CustomEndpointGatewayProbe {
+	kind: "litellm";
+	/** What the gateway says about the probing key; null when it would not say. */
+	key: CustomEndpointKeyStatus | null;
+}
+
+/** A LiteLLM virtual key's own view of itself (`/key/info`); every field is null when unreported. */
+export interface CustomEndpointKeyStatus {
+	alias: string | null;
+	spend: number | null;
+	maxBudget: number | null;
+	budgetResetAt: string | null;
+	expiresAt: string | null;
+	rpmLimit: number | null;
+	tpmLimit: number | null;
+	maxParallelRequests: number | null;
+}
+
+export const CUSTOM_ENDPOINT_TAG_LIMITS = { count: 10, length: 64 } as const;
+const TAG_PATTERN = /^[A-Za-z0-9._:/@-]+$/;
+
+export function isEndpointTag(value: unknown): value is string {
+	return (
+		typeof value === "string" &&
+		value.length > 0 &&
+		value.length <= CUSTOM_ENDPOINT_TAG_LIMITS.length &&
+		TAG_PATTERN.test(value)
+	);
 }
 
 /** `skipped` on `chat` means every parallel slot of the endpoint was busy, so nothing was sent. */
@@ -1148,6 +1206,7 @@ export interface WsMethodMap {
 		params: { id: string; modelId: string };
 		result: CustomEndpointTestResult;
 	};
+	"customEndpoints.keyStatus": { params: { id: string }; result: CustomEndpointKeyStatus | null };
 	"provider.status": { params: Record<string, never>; result: ProviderStatusReport };
 	"provider.detect": { params: Record<string, never>; result: { accounts: DetectedAccount[] } };
 	"provider.loginStart": {

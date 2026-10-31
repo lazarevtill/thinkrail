@@ -1,11 +1,17 @@
 import {
+	CUSTOM_ENDPOINT_GATEWAY_PROTOCOL_VERSION,
+	CUSTOM_ENDPOINT_LIMITS_PROTOCOL_VERSION,
+	CUSTOM_ENDPOINT_TAG_LIMITS,
 	type CustomEndpoint,
 	type CustomEndpointDraft,
+	type CustomEndpointGateway,
+	type CustomEndpointKeyStatus,
 	type CustomEndpointLimits,
 	type CustomEndpointModel,
 	type CustomEndpointProbe,
 	isEndpointConcurrency,
 	isEndpointRetries,
+	isEndpointTag,
 	isEndpointTimeoutSeconds,
 } from "@thinkrail/contracts";
 import type { Translator } from "@thinkrail/locales/react";
@@ -13,6 +19,13 @@ import type { Translator } from "@thinkrail/locales/react";
 export interface EndpointModelRow extends CustomEndpointModel {
 	selected: boolean;
 }
+
+export interface GatewayDraft {
+	sessionAffinity: boolean;
+	tagsText: string;
+}
+
+export const DEFAULT_GATEWAY_TAGS = "thinkrail";
 
 export interface EndpointDraft {
 	id?: string;
@@ -25,6 +38,7 @@ export interface EndpointDraft {
 	concurrencyText: string;
 	timeoutText: string;
 	retriesText: string;
+	gateway: GatewayDraft | null;
 	models: EndpointModelRow[];
 }
 
@@ -53,6 +67,26 @@ export interface LimitIssues {
 	concurrency: boolean;
 	timeout: boolean;
 	retries: boolean;
+	tags: boolean;
+}
+
+export function parseTags(text: string): string[] {
+	return [...new Set(text.split(/[\s,]+/).filter((tag) => tag !== ""))];
+}
+
+function tagsInvalid(gateway: GatewayDraft | null): boolean {
+	if (!gateway) return false;
+	const tags = parseTags(gateway.tagsText);
+	return tags.length > CUSTOM_ENDPOINT_TAG_LIMITS.count || !tags.every(isEndpointTag);
+}
+
+export function draftGateway(draft: EndpointDraft): CustomEndpointGateway | null {
+	if (!draft.gateway) return null;
+	return {
+		kind: "litellm",
+		sessionAffinity: draft.gateway.sessionAffinity,
+		tags: parseTags(draft.gateway.tagsText),
+	};
 }
 
 export function limitIssues(draft: EndpointDraft): LimitIssues {
@@ -60,6 +94,7 @@ export function limitIssues(draft: EndpointDraft): LimitIssues {
 		concurrency: !optionalValid(draft.concurrencyText, isEndpointConcurrency),
 		timeout: !optionalValid(draft.timeoutText, isEndpointTimeoutSeconds),
 		retries: !optionalValid(draft.retriesText, isEndpointRetries),
+		tags: tagsInvalid(draft.gateway),
 	};
 }
 
@@ -82,6 +117,7 @@ export function newEndpointDraft(): EndpointDraft {
 		concurrencyText: "",
 		timeoutText: "",
 		retriesText: "",
+		gateway: null,
 		models: [],
 	};
 }
@@ -98,6 +134,12 @@ export function editEndpointDraft(endpoint: CustomEndpoint): EndpointDraft {
 		concurrencyText: numberText(endpoint.limits.maxConcurrency),
 		timeoutText: numberText(endpoint.limits.timeoutSeconds),
 		retriesText: numberText(endpoint.limits.maxRetries),
+		gateway: endpoint.gateway
+			? {
+					sessionAffinity: endpoint.gateway.sessionAffinity,
+					tagsText: endpoint.gateway.tags.join(", "),
+				}
+			: null,
 		models: endpoint.models.map((model) => ({ ...model, selected: true })),
 	};
 }
@@ -130,6 +172,10 @@ export function addManualModel(draft: EndpointDraft, rawId: string): EndpointDra
 	return { ...draft, models: [...draft.models, row] };
 }
 
+function withCost(cost: CustomEndpointModel["cost"]): Pick<CustomEndpointModel, "cost"> {
+	return cost ? { cost } : {};
+}
+
 export function mergeProbe(
 	draft: EndpointDraft,
 	probe: Extract<CustomEndpointProbe, { ok: true }>,
@@ -147,12 +193,23 @@ export function mergeProbe(
 			reasoning: model.reasoning ?? previous.reasoning,
 			vision: model.vision ?? previous.vision,
 			chatTemplateThinking: model.chatTemplateThinking ?? previous.chatTemplateThinking,
+			...withCost(model.cost ?? previous.cost),
 			selected: previous.selected,
 		};
 	});
 	const kept = draft.models.filter((model) => !probe.models.some((found) => found.id === model.id));
 	const baseUrl = draft.baseUrl === draft.savedBaseUrl ? draft.baseUrl : probe.baseUrl;
-	return { ...draft, baseUrl, models: [...found, ...kept] };
+	const gateway =
+		draft.gateway ??
+		(probe.gateway ? { sessionAffinity: true, tagsText: DEFAULT_GATEWAY_TAGS } : null);
+	const keyParallel = probe.gateway?.key?.maxParallelRequests ?? null;
+	const concurrencyText =
+		draft.concurrencyText.trim() === "" &&
+		keyParallel !== null &&
+		isEndpointConcurrency(keyParallel)
+			? String(keyParallel)
+			: draft.concurrencyText;
+	return { ...draft, baseUrl, gateway, concurrencyText, models: [...found, ...kept] };
 }
 
 export function probeTarget(draft: EndpointDraft): { apiKey?: string; endpointId?: string } {
@@ -161,14 +218,21 @@ export function probeTarget(draft: EndpointDraft): { apiKey?: string; endpointId
 	return { endpointId: draft.id };
 }
 
-export function draftParams(draft: EndpointDraft, withLimits: boolean): CustomEndpointDraft {
+export function draftParams(
+	draft: EndpointDraft,
+	protocolVersion: number | null,
+): CustomEndpointDraft {
+	const version = protocolVersion ?? 0;
 	const key = draft.removeKey ? "" : draft.apiKey.trim() || (draft.id ? undefined : "");
 	return {
 		...(draft.id ? { id: draft.id } : {}),
 		name: draft.name.trim(),
 		baseUrl: draft.baseUrl.trim(),
 		...(key === undefined ? {} : { apiKey: key }),
-		...(withLimits ? { limits: draftLimits(draft) } : {}),
+		...(version >= CUSTOM_ENDPOINT_LIMITS_PROTOCOL_VERSION ? { limits: draftLimits(draft) } : {}),
+		...(version >= CUSTOM_ENDPOINT_GATEWAY_PROTOCOL_VERSION
+			? { gateway: draftGateway(draft) }
+			: {}),
 		models: draft.models
 			.filter((model) => model.selected)
 			.map(({ selected: _selected, ...model }) => model),
@@ -194,6 +258,7 @@ export function canSave(draft: EndpointDraft): boolean {
 		!issues.concurrency &&
 		!issues.timeout &&
 		!issues.retries &&
+		!issues.tags &&
 		draft.name.trim() !== "" &&
 		draft.baseUrl.trim() !== "" &&
 		draft.models.some((model) => model.selected)
@@ -219,4 +284,27 @@ export function probeFailureText(t: Translator, failure: ProbeFailure): string {
 				? t("settings.customEndpoints.failure.notOpenai")
 				: t("settings.customEndpoints.failure.http", { status: failure.status });
 	}
+}
+
+const EXPIRY_WARNING_MS = 7 * 24 * 60 * 60 * 1000;
+const BUDGET_WARNING_SHARE = 0.9;
+
+export interface KeyAlerts {
+	budget: "near" | "exhausted" | null;
+	expiry: "soon" | "expired" | null;
+}
+
+export function keyAlerts(status: CustomEndpointKeyStatus, now: number): KeyAlerts {
+	let budget: KeyAlerts["budget"] = null;
+	if (status.maxBudget !== null && status.maxBudget > 0 && status.spend !== null) {
+		if (status.spend >= status.maxBudget) budget = "exhausted";
+		else if (status.spend >= status.maxBudget * BUDGET_WARNING_SHARE) budget = "near";
+	}
+	const expires = status.expiresAt === null ? Number.NaN : Date.parse(status.expiresAt);
+	let expiry: KeyAlerts["expiry"] = null;
+	if (Number.isFinite(expires)) {
+		if (expires <= now) expiry = "expired";
+		else if (expires - now <= EXPIRY_WARNING_MS) expiry = "soon";
+	}
+	return { budget, expiry };
 }

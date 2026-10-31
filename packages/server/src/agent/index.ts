@@ -10,6 +10,7 @@ export {
 	stopSubagent,
 } from "./chatResources";
 export {
+	customEndpointKeyStatus,
 	listCustomEndpoints,
 	probeCustomEndpoint,
 	removeCustomEndpoint,
