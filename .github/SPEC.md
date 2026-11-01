@@ -291,7 +291,7 @@ regressions and the existing public artifact-output contract tests; no dedicated
 
 ## Fork builds
 
-`workflows/fork-build.yml` is for forks, not upstream releases. On a push to its branch (or manually) it
+`workflows/fork-build.yml` is for forks, not upstream releases. On a push to the fork's `main` (or manually) it
 stamps `0.0.0-fork.<run>` on the stable channel with no analytics key, builds the CLI and the
 `package:stable` desktop installer on Windows x64, Linux x64 and macOS arm64, and republishes the
 rolling `fork-latest` prerelease with `SHA256SUMS`. `THINKRAIL_RELEASE_BASE_URL` points the desktop

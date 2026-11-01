@@ -9,7 +9,7 @@ name: Fork build
 on:
   workflow_dispatch:
   push:
-    branches: [feat/local-models]
+    branches: [main]
 
 permissions:
   contents: write
