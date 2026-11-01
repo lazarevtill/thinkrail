@@ -315,6 +315,10 @@ test("save writes only reported facts with derived output and conservative compa
 			hasApiKey: true,
 			limits: { maxConcurrency: null, timeoutSeconds: null, maxRetries: null },
 			gateway: null,
+			apiKeyReference: "$CORP_KEY",
+			headers: [],
+			network: { systemCertificates: false, caFile: null, proxy: null },
+			managed: null,
 			models: [
 				model("known", { contextWindow: 131_072, maxTokens: defaultMaxTokens(131_072) }),
 				model("reported-output", { contextWindow: 200_000, maxTokens: 32_000, reasoning: true }),

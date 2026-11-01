@@ -135,9 +135,10 @@ export type TemplateReadLocation =
 	| { projectId: string; workspaceId?: never }
 	| { workspaceId?: never; projectId?: never };
 
-export const PROTOCOL_VERSION = 104;
+export const PROTOCOL_VERSION = 105;
 export const CUSTOM_ENDPOINT_LIMITS_PROTOCOL_VERSION = 103;
 export const CUSTOM_ENDPOINT_GATEWAY_PROTOCOL_VERSION = 104;
+export const CUSTOM_ENDPOINT_CORPORATE_PROTOCOL_VERSION = 105;
 export const FONTS_PROTOCOL_VERSION = 102;
 export const CUSTOM_ENDPOINTS_PROTOCOL_VERSION = 101;
 export const PI_PACKAGES_PROTOCOL_VERSION = 100;
@@ -363,6 +364,7 @@ export const WS_METHODS = {
 	customEndpointsRemove: "customEndpoints.remove",
 	customEndpointsTest: "customEndpoints.test",
 	customEndpointsKeyStatus: "customEndpoints.keyStatus",
+	organizationPolicy: "organization.policy",
 	modelClampThinking: "model.clampThinking",
 	providerStatus: "provider.status",
 	providerDetect: "provider.detect",
@@ -645,6 +647,103 @@ export interface CustomEndpointModel {
 	chatTemplateThinking: boolean | null;
 	/** USD per million tokens as the gateway prices it (fork: LiteLLM); absent or null leaves the saved cost. */
 	cost?: CustomEndpointCost | null;
+	/** Fork: the wire API this model is called with through the server; absent or null is chat completions. */
+	api?: CustomEndpointApi | null;
+}
+
+export const CUSTOM_ENDPOINT_APIS = [
+	"openai-completions",
+	"openai-responses",
+	"anthropic-messages",
+] as const;
+export type CustomEndpointApi = (typeof CUSTOM_ENDPOINT_APIS)[number];
+
+export function isCustomEndpointApi(value: unknown): value is CustomEndpointApi {
+	return CUSTOM_ENDPOINT_APIS.some((api) => api === value);
+}
+
+/** Fork: a header sent with every request to the server. */
+export interface CustomEndpointHeader {
+	name: string;
+	/** A `$VAR` reference or `!command` comes back as written; a literal value is a secret and comes back null. */
+	value: string | null;
+}
+
+/** Fork: how the host reaches the server. */
+export interface CustomEndpointNetwork {
+	/** Also trust the operating system's certificate store (a company root CA installed by IT). */
+	systemCertificates: boolean;
+	/** A PEM file of extra certificate authorities, read on the host. */
+	caFile: string | null;
+	/** An http(s) proxy URL without credentials; null uses the environment's proxy settings. */
+	proxy: string | null;
+}
+
+export const DEFAULT_ENDPOINT_NETWORK: CustomEndpointNetwork = {
+	systemCertificates: false,
+	caFile: null,
+	proxy: null,
+};
+
+/** Fork: an endpoint shipped in the organization's managed file. */
+export interface CustomEndpointManaged {
+	/** The organization supplies the key, so the user can't change it. */
+	key: boolean;
+	/** The organization lists the models, so the user can't change them. */
+	models: boolean;
+}
+
+export const CUSTOM_ENDPOINT_HEADER_LIMITS = { count: 20, value: 4_096 } as const;
+const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,128}$/;
+const RESERVED_HEADERS = new Set([
+	"host",
+	"content-length",
+	"content-type",
+	"transfer-encoding",
+	"connection",
+]);
+
+export function isEndpointHeaderName(value: unknown): value is string {
+	return (
+		typeof value === "string" &&
+		HEADER_NAME.test(value) &&
+		!RESERVED_HEADERS.has(value.toLowerCase())
+	);
+}
+
+export function isEndpointHeaderValue(value: unknown): value is string {
+	return (
+		typeof value === "string" &&
+		value.trim() !== "" &&
+		value.length <= CUSTOM_ENDPOINT_HEADER_LIMITS.value &&
+		!/[\r\n]/.test(value)
+	);
+}
+
+export function isEndpointProxyUrl(value: unknown): value is string {
+	if (typeof value !== "string") return false;
+	try {
+		const url = new URL(value);
+		return (
+			(url.protocol === "http:" || url.protocol === "https:") &&
+			!url.username &&
+			!url.password &&
+			!url.search
+		);
+	} catch {
+		return false;
+	}
+}
+
+/** Fork: the organization's model policy from its managed file. */
+export interface OrganizationPolicy {
+	/** `managed`: only the organization's servers; `custom`: any custom server; null: no restriction. */
+	restrictModels: "managed" | "custom" | null;
+	/** The managed file in effect, if any. */
+	managedFile: string | null;
+	managedServers: number;
+	/** Why the managed file couldn't be applied; the previous state stays in force. */
+	error: string | null;
 }
 
 export interface CustomEndpointCost {
@@ -662,6 +761,11 @@ export interface CustomEndpoint {
 	hasApiKey: boolean;
 	limits: CustomEndpointLimits;
 	gateway: CustomEndpointGateway | null;
+	/** Fork: the saved key when it's a `$VAR` reference or a `!command`, which aren't secrets. */
+	apiKeyReference: string | null;
+	headers: CustomEndpointHeader[];
+	network: CustomEndpointNetwork;
+	managed: CustomEndpointManaged | null;
 	models: CustomEndpointModel[];
 }
 
@@ -670,6 +774,9 @@ export interface CustomEndpointProbeRequest {
 	/** Omitted together with `endpointId` to reuse that endpoint's saved key for its unchanged address. */
 	apiKey?: string;
 	endpointId?: string;
+	/** Fork: headers to send; a null value reuses `endpointId`'s saved value of that header. */
+	headers?: CustomEndpointHeader[];
+	network?: CustomEndpointNetwork;
 }
 
 export type CustomEndpointProbeFailure =
@@ -678,7 +785,9 @@ export type CustomEndpointProbeFailure =
 	| "timeout"
 	| "unreachable"
 	| "not-openai"
-	| "no-models";
+	| "no-models"
+	/** Fork: the server's TLS certificate isn't trusted (a company CA the host doesn't know). */
+	| "certificate";
 
 export type CustomEndpointProbe =
 	| {
@@ -700,6 +809,10 @@ export interface CustomEndpointDraft {
 	limits?: CustomEndpointLimits;
 	/** Omitted to keep the saved gateway options; null drops them. */
 	gateway?: CustomEndpointGateway | null;
+	/** Fork: omitted keeps every saved header; a null value keeps that header's saved value. */
+	headers?: CustomEndpointHeader[];
+	/** Fork: omitted keeps the saved network settings. */
+	network?: CustomEndpointNetwork;
 	models: CustomEndpointModel[];
 }
 
@@ -1207,6 +1320,7 @@ export interface WsMethodMap {
 		result: CustomEndpointTestResult;
 	};
 	"customEndpoints.keyStatus": { params: { id: string }; result: CustomEndpointKeyStatus | null };
+	"organization.policy": { params: Record<string, never>; result: OrganizationPolicy };
 	"provider.status": { params: Record<string, never>; result: ProviderStatusReport };
 	"provider.detect": { params: Record<string, never>; result: { accounts: DetectedAccount[] } };
 	"provider.loginStart": {

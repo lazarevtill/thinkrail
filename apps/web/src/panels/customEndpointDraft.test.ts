@@ -1,10 +1,12 @@
 import { expect, test } from "bun:test";
 import type { CustomEndpointModel } from "@thinkrail/contracts";
 import {
+	addHeaderRow,
 	addManualModel,
 	addressMoved,
 	applyPreset,
 	canSave,
+	connectionIssues,
 	draftParams,
 	editEndpointDraft,
 	keyAlerts,
@@ -13,7 +15,10 @@ import {
 	mergeProbe,
 	newEndpointDraft,
 	parseTags,
+	probeExtras,
 	probeTarget,
+	removeHeaderRow,
+	updateHeaderRow,
 } from "./customEndpointDraft";
 
 function model(id: string, patch: Partial<CustomEndpointModel> = {}): CustomEndpointModel {
@@ -36,6 +41,10 @@ const saved = {
 	hasApiKey: true,
 	limits: { maxConcurrency: null, timeoutSeconds: null, maxRetries: null },
 	gateway: null,
+	apiKeyReference: null,
+	headers: [],
+	network: { systemCertificates: false, caFile: null, proxy: null },
+	managed: null,
 	models: [model("a", { contextWindow: 8_000, maxTokens: 2_000 }), model("manual")],
 };
 
@@ -301,4 +310,99 @@ test("fork: key alerts flag a nearly spent or spent budget and a key close to or
 	expect(keyAlerts({ ...key, expiresAt: "2026-12-30T00:00:00Z" }, now).expiry).toBeNull();
 	expect(keyAlerts({ ...key, expiresAt: "2026-10-30T00:00:00Z" }, now).expiry).toBe("expired");
 	expect(keyAlerts({ ...key, expiresAt: "not a date" }, now).expiry).toBeNull();
+});
+
+const corporate = {
+	...saved,
+	apiKeyReference: "!az account get-access-token --query accessToken -o tsv",
+	headers: [
+		{ name: "Ocp-Apim-Subscription-Key", value: null },
+		{ name: "X-Org", value: "$ORG_ID" },
+	],
+	network: { systemCertificates: true, caFile: null, proxy: "http://proxy.corp:3128" },
+};
+
+test("fork: an edit shows a saved key reference but only a changed key counts as typed", () => {
+	const draft = editEndpointDraft(corporate);
+	expect(draft.apiKey).toBe(corporate.apiKeyReference);
+	expect(probeTarget(draft)).toEqual({ endpointId: "custom-gw" });
+	expect(probeTarget({ ...draft, apiKey: "!gcloud auth print-access-token" })).toEqual({
+		apiKey: "!gcloud auth print-access-token",
+	});
+	expect(draftParams(draft, 105).apiKey).toBe(corporate.apiKeyReference);
+});
+
+test("fork: headers keep saved secrets as null, validate, and ride Detect and save from v105", () => {
+	let draft = editEndpointDraft(corporate);
+	expect(draft.headers.map((row) => row.value)).toEqual(["", "$ORG_ID"]);
+	expect(draftParams(draft, 105).headers).toEqual([
+		{ name: "Ocp-Apim-Subscription-Key", value: null },
+		{ name: "X-Org", value: null },
+	]);
+	const retyped = updateHeaderRow(draft, draft.headers[1]?.key ?? 0, { value: "$OTHER_ORG" });
+	expect(draftParams(retyped, 105).headers?.[1]).toEqual({ name: "X-Org", value: "$OTHER_ORG" });
+	expect(draftParams(draft, 105).network).toEqual(corporate.network);
+	expect(probeExtras(draft, 105)).toEqual({
+		endpointId: "custom-gw",
+		headers: [
+			{ name: "Ocp-Apim-Subscription-Key", value: null },
+			{ name: "X-Org", value: null },
+		],
+		network: corporate.network,
+	});
+	expect(probeExtras(draft, 104)).toEqual({});
+	expect(draftParams(draft, 104)).not.toHaveProperty("headers");
+	expect(connectionIssues(draft)).toEqual({ headers: false, proxy: false });
+	draft = addHeaderRow(draft);
+	const added = draft.headers.at(-1);
+	if (!added) throw new Error("no row");
+	expect(connectionIssues(draft).headers).toBe(true);
+	expect(canSave(draft)).toBe(false);
+	draft = updateHeaderRow(draft, added.key, { name: "x-org", value: "dup" });
+	expect(connectionIssues(draft).headers).toBe(true);
+	draft = updateHeaderRow(draft, added.key, { name: "CF-Access-Client-Id", value: " id-1 " });
+	expect(connectionIssues(draft).headers).toBe(false);
+	expect(draftParams(draft, 105).headers?.at(-1)).toEqual({
+		name: "CF-Access-Client-Id",
+		value: "id-1",
+	});
+	draft = removeHeaderRow(draft, added.key);
+	expect(draft.headers).toHaveLength(2);
+	expect(connectionIssues({ ...draft, proxy: "http://u:p@proxy:1" }).proxy).toBe(true);
+	const withCommand = addHeaderRow(draft);
+	const commandRow = withCommand.headers.at(-1);
+	if (!commandRow) throw new Error("no row");
+	expect(
+		connectionIssues(updateHeaderRow(withCommand, commandRow.key, { name: "X-Tok", value: "!id" }))
+			.headers,
+	).toBe(true);
+	expect(canSave({ ...draft, proxy: "socks5://proxy:1" })).toBe(false);
+});
+
+test("fork: a re-detect keeps the API the user picked and older hosts never get one", () => {
+	const draft = editEndpointDraft({
+		...corporate,
+		models: [model("claude", { api: "openai-responses" })],
+	});
+	const merged = mergeProbe(draft, {
+		ok: true,
+		baseUrl: "https://gw.example/v1",
+		models: [
+			model("claude", { api: "anthropic-messages" }),
+			model("new", { api: "anthropic-messages" }),
+		],
+	});
+	expect(merged.models.map((row) => row.api)).toEqual(["openai-responses", "anthropic-messages"]);
+	const completions = mergeProbe(editEndpointDraft({ ...corporate, models: [model("claude")] }), {
+		ok: true,
+		baseUrl: "https://gw.example/v1",
+		models: [model("claude", { api: "anthropic-messages" })],
+	});
+	expect(completions.models[0]?.api).toBeUndefined();
+	const params = draftParams(
+		{ ...merged, models: merged.models.map((row) => ({ ...row, selected: true })) },
+		104,
+	);
+	expect(params.models.every((row) => !("api" in row))).toBe(true);
+	expect(draftParams(merged, 105).models[0]?.api).toBe("openai-responses");
 });

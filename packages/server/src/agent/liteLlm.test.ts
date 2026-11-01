@@ -190,6 +190,7 @@ test("a deployment group takes the smallest limits and only capabilities every d
 		vision: false,
 		tools: true,
 		cost: { input: 0.2, output: 0.6, cacheRead: 0, cacheWrite: 0 },
+		anthropic: false,
 	});
 	expect(groups?.get("claude-sonnet")?.cost).toEqual({
 		input: 3,

@@ -1,6 +1,20 @@
-import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import type { CustomEndpointGateway } from "@thinkrail/contracts";
-import { readEndpointLimits } from "./endpointLimits";
+import type { AnyModel } from "@earendil-works/pi-ai";
+import type { ModelRuntime, ModelRuntimeAuthOverrides } from "@earendil-works/pi-coding-agent";
+import {
+	CUSTOM_ENDPOINT_ID_PREFIX,
+	type CustomEndpointGateway,
+	type CustomEndpointKeyStatus,
+} from "@thinkrail/contracts";
+import { commandToken, forgetCommandToken, networkFetch } from "./endpointAccess";
+import { type EndpointLimits, readEndpointLimits } from "./endpointLimits";
+import {
+	classifyGatewayError,
+	gatewayError,
+	gatewayErrorMessage,
+	retryAfterSeconds,
+	rewriteErrorBody,
+} from "./gatewayErrors";
+import { managedOrigin, policyRefusal, providerAllowed, readManagedConfig } from "./managedConfig";
 
 type Fetch = typeof globalThis.fetch;
 type Release = () => void;
@@ -173,10 +187,95 @@ function gatewayHeaders(
 	return headers;
 }
 
+/** Fork: what the request layer needs to know about a saved endpoint, supplied by customEndpoints. */
+export interface EndpointDirectory {
+	name(providerId: string): string;
+	keyCommand(providerId: string): string | undefined;
+	keyStatus(providerId: string): Promise<CustomEndpointKeyStatus | null>;
+}
+
+let directory: EndpointDirectory | null = null;
+
+export function setEndpointDirectory(next: EndpointDirectory | null): void {
+	directory = next;
+}
+
+function isEndpoint(providerId: string): boolean {
+	return providerId.startsWith(CUSTOM_ENDPOINT_ID_PREFIX);
+}
+
+async function explainGatewayFailure(providerId: string, response: Response): Promise<Response> {
+	const text = await response.text();
+	const rebuilt = (body: string) =>
+		new Response(body, {
+			status: response.status,
+			statusText: response.statusText,
+			headers: (() => {
+				const headers = new Headers(response.headers);
+				headers.delete("content-length");
+				headers.delete("content-encoding");
+				return headers;
+			})(),
+		});
+	let body: unknown;
+	try {
+		body = JSON.parse(text);
+	} catch {
+		return rebuilt(text);
+	}
+	const error = gatewayError(body);
+	const kind = error ? classifyGatewayError(response.status, error) : null;
+	if (!error || !kind) return rebuilt(text);
+	const key =
+		kind === "budget" ? await (directory?.keyStatus(providerId).catch(() => null) ?? null) : null;
+	const message = gatewayErrorMessage({
+		kind,
+		server: directory?.name(providerId) ?? providerId,
+		original: error.message,
+		key,
+		retryAfterSeconds: retryAfterSeconds(response.headers),
+	});
+	return rebuilt(JSON.stringify(rewriteErrorBody(body, message)));
+}
+
+/**
+ * Fork: a saved endpoint's fetch — its certificate and proxy settings, a fresh token after the
+ * server refuses a cached one, and plain-words LiteLLM quota and key errors.
+ */
+function endpointFetch(
+	providerId: string,
+	settings: EndpointLimits | undefined,
+	base?: Fetch,
+): Fetch {
+	const inner = settings?.network
+		? networkFetch(settings.network, base)
+		: (base ?? globalThis.fetch);
+	const wrapped = Object.assign(
+		async (input: Parameters<Fetch>[0], init?: Parameters<Fetch>[1]) => {
+			const response = await inner(input, init);
+			if (response.ok) return response;
+			if (response.status === 401 || response.status === 403) {
+				const command = directory?.keyCommand(providerId);
+				if (command) forgetCommandToken(command);
+			}
+			return settings?.gateway?.kind === "litellm"
+				? explainGatewayFailure(providerId, response)
+				: response;
+		},
+		{ preconnect: inner.preconnect, [LIMITED]: true as const },
+	);
+	return wrapped;
+}
+
 export function withEndpointOptions<T extends RequestOptions>(providerId: string, options: T): T {
 	const settings = readEndpointLimits()[providerId];
-	if (!settings) return options;
+	if (!settings && !isEndpoint(providerId)) return options;
 	const next: NonNullable<RequestOptions> = { ...(options ?? {}) };
+	if (!settings) {
+		const current = next.fetch as (Fetch & { [LIMITED]?: true }) | undefined;
+		if (!current?.[LIMITED]) next.fetch = endpointFetch(providerId, undefined, current);
+		return next as T;
+	}
 	const added = gatewayHeaders(settings.gateway, next.sessionId);
 	if (Object.keys(added).length > 0) next.headers = { ...added, ...(next.headers ?? {}) };
 	if (settings.maxRetries !== undefined && next.maxRetries !== 0)
@@ -185,19 +284,66 @@ export function withEndpointOptions<T extends RequestOptions>(providerId: string
 		settings.timeoutSeconds !== undefined ? settings.timeoutSeconds * 1_000 : next.timeoutMs;
 	const current = next.fetch as (Fetch & { [LIMITED]?: true }) | undefined;
 	if (current?.[LIMITED]) return next as T;
+	const base = endpointFetch(providerId, settings, current);
 	if (settings.maxConcurrency === undefined) {
+		next.fetch = base;
 		if (timeoutMs !== undefined) next.timeoutMs = timeoutMs;
 		return next as T;
 	}
-	next.fetch = limitedFetch(providerId, timeoutMs ?? OPENAI_SDK_DEFAULT_TIMEOUT_MS, current);
+	next.fetch = limitedFetch(providerId, timeoutMs ?? OPENAI_SDK_DEFAULT_TIMEOUT_MS, base);
 	next.timeoutMs = UNBOUNDED_TIMEOUT_MS;
 	return next as T;
+}
+
+type AuthOverrides = ModelRuntimeAuthOverrides | undefined;
+
+/**
+ * Fork: every model request resolves its auth here. A refused provider fails before anything is sent;
+ * an endpoint whose key is a `!command` gets the cached token instead of pi running the command on
+ * every request.
+ */
+function originOf(url: unknown): string | null {
+	if (typeof url !== "string") return null;
+	try {
+		return new URL(url).origin;
+	} catch {
+		return null;
+	}
+}
+
+async function endpointAuthOverrides(
+	model: AnyModel,
+	overrides: AuthOverrides,
+): Promise<AuthOverrides> {
+	const providerId = model.provider;
+	if (!providerAllowed(providerId)) throw new Error(policyRefusal(providerId));
+	const origin = managedOrigin(providerId);
+	if (
+		origin !== null &&
+		readManagedConfig().restrictModels !== null &&
+		originOf(model.baseUrl) !== origin
+	)
+		throw new Error(
+			`The organization's server "${providerId}" must be reached at ${origin}; its saved address was changed. Open Settings → Providers to restore it.`,
+		);
+	if (overrides?.apiKey !== undefined || !isEndpoint(providerId)) return overrides;
+	const command = directory?.keyCommand(providerId);
+	if (!command) return overrides;
+	const token = await commandToken(command);
+	return token === undefined ? overrides : { ...overrides, apiKey: token };
 }
 
 export function installRequestLimits(runtime: ModelRuntime): void {
 	const target = runtime as ModelRuntime & { [INSTALLED]?: true };
 	if (!Object.isExtensible(target) || target[INSTALLED]) return;
 	target[INSTALLED] = true;
+	if (typeof runtime.getAuth === "function") {
+		const getAuth = runtime.getAuth.bind(runtime);
+		runtime.getAuth = async (target: string | AnyModel, overrides?: AuthOverrides) => {
+			if (typeof target === "string") return getAuth(target, overrides);
+			return getAuth(target, await endpointAuthOverrides(target, overrides));
+		};
+	}
 	if (typeof runtime.stream === "function") {
 		const stream = runtime.stream.bind(runtime);
 		runtime.stream = (model, context, options) =>

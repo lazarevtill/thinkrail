@@ -105,6 +105,8 @@ export const E2E_SCREENSHOT_DIR = join(repoRoot, "e2e", "screenshots");
 export const E2E_EDITOR_LOG = join(E2E_DATA_DIR, "editor-invocations.log");
 
 export const E2E_PI_AGENT_DIR = join(E2E_DATA_DIR, "pi-agent");
+/** Fork: the organization-managed file the e2e host reads instead of the machine-wide one. */
+export const E2E_MANAGED_CONFIG = join(E2E_DATA_DIR, "managed.json");
 
 export const E2E_PI_MODELS_SEED = join(E2E_DATA_DIR, "pi-agent-models.seed.json");
 

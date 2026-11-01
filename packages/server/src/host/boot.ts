@@ -1,5 +1,6 @@
 import { findFreePort } from "@thinkrail/shared/freePort";
 import { resolveShellEnv } from "@thinkrail/shared/shellEnv";
+import { syncManagedEndpoints } from "../agent";
 import { reportError } from "../analytics";
 import { initializeJbcentralRuntime } from "../auth";
 import { applyHostEnvironment } from "../environment";
@@ -69,6 +70,9 @@ export async function bootHost(options: BootHostOptions): Promise<BootedHost> {
 	await shellEnv;
 	applyHostEnvironment();
 	await initializeJbcentralRuntime();
+	await syncManagedEndpoints().catch((error: unknown) =>
+		log.warn("applying the organization's managed servers failed", error),
+	);
 
 	const requested = options.port;
 	const port =

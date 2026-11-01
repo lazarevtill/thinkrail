@@ -3,6 +3,7 @@ import type {
 	CustomEndpointKeyStatus,
 	CustomEndpointModel,
 } from "@thinkrail/contracts";
+import { type Access, requestHeaders, sendsCredentials } from "./endpointAccess";
 
 const DETAIL_TIMEOUT_MS = 3_000;
 const CHAT_MODES = new Set(["chat", "completion", "responses"]);
@@ -26,13 +27,11 @@ function text(value: unknown): string | null {
 	return typeof value === "string" && value.trim() !== "" ? value : null;
 }
 
-async function getJson(url: string, key: string | undefined): Promise<unknown> {
-	const headers: Record<string, string> = { accept: "application/json" };
-	if (key) headers.authorization = `Bearer ${key}`;
+async function getJson(url: string, access: Access): Promise<unknown> {
 	try {
-		const response = await fetch(url, {
-			headers,
-			redirect: key ? "error" : "follow",
+		const response = await access.fetch(url, {
+			headers: requestHeaders(access, { accept: "application/json" }),
+			redirect: sendsCredentials(access) ? "error" : "follow",
 			signal: AbortSignal.timeout(DETAIL_TIMEOUT_MS),
 		});
 		return response.ok ? await response.json() : undefined;
@@ -54,6 +53,8 @@ export interface LiteLlmModelInfo {
 	vision: boolean | null;
 	tools: boolean | null;
 	cost: CustomEndpointCost | null;
+	/** Claude through LiteLLM keeps its thinking and prompt caching on LiteLLM's `/v1/messages`. */
+	anthropic: boolean;
 }
 
 function flag(info: Json, field: string): boolean | null {
@@ -102,7 +103,10 @@ export function parseLiteLlmModelInfo(payload: unknown): Map<string, LiteLlmMode
 			continue;
 		recognized = true;
 		const info = entry.model_info;
+		const params = isObject(entry.litellm_params) ? entry.litellm_params : {};
+		const route = `${text(info.litellm_provider) ?? ""}/${text(params.model) ?? ""}`.toLowerCase();
 		const next: LiteLlmModelInfo = {
+			anthropic: route.startsWith("anthropic/") || /(^|[/.])(anthropic\.)?claude/.test(route),
 			mode: text(info.mode),
 			contextWindow: positiveInt(info.max_input_tokens),
 			maxTokens: positiveInt(info.max_output_tokens),
@@ -123,6 +127,7 @@ export function parseLiteLlmModelInfo(payload: unknown): Map<string, LiteLlmMode
 						vision: both(previous.vision, next.vision),
 						tools: both(previous.tools, next.tools),
 						cost: previous.cost ?? next.cost,
+						anthropic: previous.anthropic && next.anthropic,
 					}
 				: next,
 		);
@@ -152,6 +157,9 @@ export function applyLiteLlmModelInfo(
 				vision: group.vision ?? model.vision,
 				tools: group.tools ?? model.tools,
 				cost: group.cost,
+				...(group.anthropic && model.api === undefined
+					? { api: "anthropic-messages" as const }
+					: {}),
 			},
 		];
 	});
@@ -159,9 +167,9 @@ export function applyLiteLlmModelInfo(
 
 export async function fetchLiteLlmModelInfo(
 	baseUrl: string,
-	key: string | undefined,
+	access: Access,
 ): Promise<Map<string, LiteLlmModelInfo> | undefined> {
-	return parseLiteLlmModelInfo(await getJson(`${liteLlmRoot(baseUrl)}/model/info`, key));
+	return parseLiteLlmModelInfo(await getJson(`${liteLlmRoot(baseUrl)}/model/info`, access));
 }
 
 export function parseLiteLlmKeyInfo(payload: unknown): CustomEndpointKeyStatus | null {
@@ -182,8 +190,8 @@ export function parseLiteLlmKeyInfo(payload: unknown): CustomEndpointKeyStatus |
 /** The calling key's own `/key/info`; LiteLLM answers it for the key in the Authorization header. */
 export async function fetchLiteLlmKeyStatus(
 	baseUrl: string,
-	key: string | undefined,
+	access: Access,
 ): Promise<CustomEndpointKeyStatus | null> {
-	if (!key) return null;
-	return parseLiteLlmKeyInfo(await getJson(`${liteLlmRoot(baseUrl)}/key/info`, key));
+	if (!access.key) return null;
+	return parseLiteLlmKeyInfo(await getJson(`${liteLlmRoot(baseUrl)}/key/info`, access));
 }

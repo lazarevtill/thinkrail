@@ -24,6 +24,7 @@ import {
 	E2E_FAKE_BIN_DIR,
 	E2E_HOME_DIR,
 	E2E_INSTALLED_FONTS,
+	E2E_MANAGED_CONFIG,
 	E2E_PI_AGENT_DIR,
 	E2E_PICK_DIR_POINTER,
 	E2E_PORT,
@@ -96,6 +97,8 @@ export default defineConfig({
 			// Keep cross-agent personal skill aliases away from the developer's real homes/overrides.
 			...toolHomeEnv(E2E_HOME_DIR),
 			PI_CODING_AGENT_DIR: E2E_PI_AGENT_DIR,
+			// Fork: never read a real machine-wide managed file; specs write this one.
+			THINKRAIL_MANAGED_CONFIG: E2E_MANAGED_CONFIG,
 			// Keep the suite hermetic: `model.list` fires a detached pi.dev catalog refresh (issue #98) that
 			// must never leave the machine in tests — PI_OFFLINE is pi's own convention and our guard honors it.
 			PI_OFFLINE: "1",

@@ -16,6 +16,7 @@ import {
 	CHAT_RESOURCES_PROTOCOL_VERSION,
 	CLIENT_ERROR_REPORT_PROTOCOL_VERSION,
 	CONTEXT_WINDOW_SETTINGS_PROTOCOL_VERSION,
+	CUSTOM_ENDPOINT_CORPORATE_PROTOCOL_VERSION,
 	CUSTOM_ENDPOINT_GATEWAY_PROTOCOL_VERSION,
 	CUSTOM_ENDPOINT_ID_PREFIX,
 	CUSTOM_ENDPOINT_LIMITS_PROTOCOL_VERSION,
@@ -30,8 +31,12 @@ import {
 	HOST_ENVIRONMENT_PROTOCOL_VERSION,
 	HOST_UPDATE_RUN_PROTOCOL_VERSION,
 	isBackgroundCommandCompletionMessage,
+	isCustomEndpointApi,
 	isCustomEndpointId,
 	isEndpointConcurrency,
+	isEndpointHeaderName,
+	isEndpointHeaderValue,
+	isEndpointProxyUrl,
 	isEndpointRetries,
 	isEndpointTag,
 	isEndpointTimeoutSeconds,
@@ -590,10 +595,28 @@ test("fork: custom endpoint limits and the agent check ride v103", () => {
 
 test("fork: LiteLLM gateway options and key status ride v104", () => {
 	expect(CUSTOM_ENDPOINT_GATEWAY_PROTOCOL_VERSION).toBe(104);
-	expect(PROTOCOL_VERSION).toBe(104);
+	expect(PROTOCOL_VERSION).toBeGreaterThanOrEqual(104);
 	expect(WS_METHODS.customEndpointsKeyStatus).toBe("customEndpoints.keyStatus");
 	for (const tag of ["thinkrail", "team:ai", "env/prod", "a.b_c-d@e"])
 		expect(isEndpointTag(tag)).toBe(true);
 	for (const tag of ["", "two words", "a,b", "x".repeat(65), 7])
 		expect(isEndpointTag(tag)).toBe(false);
+});
+
+test("fork: corporate endpoint settings and the organization policy ride v105", () => {
+	expect(CUSTOM_ENDPOINT_CORPORATE_PROTOCOL_VERSION).toBe(105);
+	expect(PROTOCOL_VERSION).toBe(105);
+	expect(WS_METHODS.organizationPolicy).toBe("organization.policy");
+	expect(isCustomEndpointApi("anthropic-messages")).toBe(true);
+	expect(isCustomEndpointApi("google-generative-ai")).toBe(false);
+	for (const name of ["Ocp-Apim-Subscription-Key", "CF-Access-Client-Id", "x-org"])
+		expect(isEndpointHeaderName(name)).toBe(true);
+	for (const name of ["", "Host", "content-length", "bad name", "a:b", 3])
+		expect(isEndpointHeaderName(name)).toBe(false);
+	expect(isEndpointHeaderValue("$APIM_KEY")).toBe(true);
+	expect(isEndpointHeaderValue("a\r\nb")).toBe(false);
+	expect(isEndpointHeaderValue("  ")).toBe(false);
+	expect(isEndpointProxyUrl("http://proxy.corp:3128")).toBe(true);
+	expect(isEndpointProxyUrl("http://user:pw@proxy.corp:3128")).toBe(false);
+	expect(isEndpointProxyUrl("socks5://proxy.corp:1080")).toBe(false);
 });

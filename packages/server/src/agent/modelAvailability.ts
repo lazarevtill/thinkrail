@@ -1,6 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { logger } from "../log";
+import { providerAllowed } from "./managedConfig";
 
 const log = logger("agent");
 
@@ -36,7 +37,9 @@ export function setModelListingPublisher(publisher: (() => void) | null): void {
 }
 
 export function accountAvailableModels(runtime: ModelAvailabilityRuntime): readonly Model<Api>[] {
-	const snapshot = runtime.getAvailableSnapshot();
+	const snapshot = runtime
+		.getAvailableSnapshot()
+		.filter((model) => providerAllowed(model.provider));
 	const chatgpt = chatgptAllowlist(runtime);
 	const listings = listingStates.get(runtime)?.listings;
 	if (!chatgpt && !listings?.size) return snapshot;

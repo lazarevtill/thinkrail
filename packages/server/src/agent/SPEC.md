@@ -242,6 +242,51 @@ re-opened transcripts provider-valid.
       affinity is on (LiteLLM's sticky routing keeps a chat on one deployment so its prompt cache is
       reused, and Langfuse groups the chat as one session) and `x-litellm-tags: a,b` for spend
       attribution; a caller's own header of the same name wins.
+    - **Corporate access (fork, `endpointAccess`, `managedConfig`, `gatewayErrors`).** See also the
+      top-level `corporate-setup.md`.
+      - Headers are written to the provider's pi `headers`, so pi sends them with every request. A value
+        is a `$VAR` template or a literal, never a `!command` (pi would run it uncached on every
+        request). The list returns a value only when it is exactly one `$VAR` (`isReference`); anything
+        with literal parts is a secret and comes back null. A draft's null value — or, on Detect, a value
+        equal to the saved one — keeps the saved value of that header name, and a draft without
+        `headers` keeps them all. Detect never runs a header command.
+      - `network` (`systemCertificates`, a PEM `caFile`, a credential-free `proxy`) lives in the
+        sidecar. Every fetch to the server — Detect, key status and the model requests, through the
+        request wrapper — passes Bun's `tls.ca` (bundled roots plus the OS store and/or the file) and
+        `proxy`. A TLS trust failure on Detect is the closed `certificate` reason. A Detect that uses
+        saved credentials always uses the saved network settings, so a client can't route a saved key
+        through a proxy of its choosing.
+      - Keys: `$VAR` templates and `!commands` as in pi. A command runs asynchronously (15 s bound) and
+        its token is cached until 60 s before its JWT `exp`, else five minutes; the runtime's `getAuth`
+        is wrapped so every model request (chats, compaction, subagents, Test) passes the cached token
+        as `apiKey`, which makes pi skip its own per-request command; a 401/403 drops the token. A
+        typed command runs on Detect (the user's action; a value equal to the saved key is not typed).
+        A saved command runs unprompted (Detect from an edit, key status) only when it is the managed
+        file's `apiKey`, or its sha256 matches the one recorded when a v105+ client — which shows the
+        command — saved it through the form; an older client's save vouches for nothing.
+      - A model's `api` (`openai-responses`, `anthropic-messages`) is written as the pi model's `api`;
+        Anthropic Messages also gets the server root (without `/v1`) as the model's `baseUrl`, which
+        stays on the server's origin. LiteLLM routes to Anthropic / Bedrock / Vertex Claude are
+        suggested as Anthropic Messages.
+      - LiteLLM refusals (`budget_exceeded`, 429 rate limits, expired / invalid keys) are rewritten in
+        the response body before pi reads it, naming the server and, for a budget, the key's spend and
+        reset from `/key/info`.
+      - Managed servers: `managedConfig` reads the organization's file (`THINKRAIL_MANAGED_CONFIG`,
+        else a machine-wide path), cached by mtime; an invalid server is skipped with a reason and an
+        unparsable file keeps the previous state. `syncManagedEndpoints` (at host boot, on
+        `customEndpoints.list` and `organization.policy`) rebuilds each `custom-org-<id>` server from the
+        file through the same provider writer — keeping only the user's key and model picks where the
+        file sets none, so a hand-edited address or route is replaced, and a changed `baseUrl` migrates
+        — marks its sidecar entry `managed`, and removes marked servers the file dropped, but only when
+        the file parsed cleanly (`degraded` otherwise). A save of a managed server keeps everything the
+        file sets; removal is refused. The machine-wide file wins over `THINKRAIL_MANAGED_CONFIG`; an
+        unreadable file with no earlier good state, or an unknown `restrictModels`, fails closed to
+        `"managed"` with the previously synced servers still allowed.
+      - Policy: `restrictModels` `"managed"` / `"custom"` filters `accountAvailableModels` (so lists,
+        defaults, session creation, model switches and one-shot picks) and the wrapped `getAuth`
+        refuses a request for any other provider before it is sent (delegation, the subagent tool and
+        reopened chats included), and a managed server's request whose model address left the file's
+        origin.
     - **Agent check (fork).** `endpointTest.testCustomEndpoint(id, modelId)` sends one short chat and one
       forced `get_current_time` tool call through pi to a saved `custom-*` model and reports `chat` /
       `tools` (`ok` / `failed` / `skipped`), latency and output tokens per second. A busy gate (every
@@ -1153,7 +1198,8 @@ re-opened transcripts provider-valid.
   pre-bootstrap `configurePiRuntimeGenerationInitializer` composition seam; `listModelContextSettings` /
   `setModelContextWindow` (the `modelContext` adapter); `listCustomEndpoints` / `probeCustomEndpoint` /
   `saveCustomEndpoint` / `removeCustomEndpoint` (the `customEndpoints` adapter) and `testCustomEndpoint`
-  (fork: the agent check) and `customEndpointKeyStatus` (fork: a LiteLLM key's status);
+  (fork: the agent check), `customEndpointKeyStatus` (fork: a LiteLLM key's status),
+  `syncManagedEndpoints` and `organizationPolicy` (fork: the organization's managed file);
   `setModelsFilePublisher`
   (their shared `provider.changed` seam); `piLoginOptions` (pi login options
   carrying the lazily created installation device id, for `auth`);

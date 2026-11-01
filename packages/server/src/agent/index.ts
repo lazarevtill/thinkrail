@@ -15,6 +15,7 @@ export {
 	probeCustomEndpoint,
 	removeCustomEndpoint,
 	saveCustomEndpoint,
+	syncManagedEndpoints,
 } from "./customEndpoints";
 export {
 	type ReviewSubagentRun,
@@ -35,6 +36,7 @@ export {
 	setDisabledExtensionsResolver,
 	setDisabledPackagesResolver,
 } from "./extensions";
+export { organizationPolicy } from "./managedConfig";
 export {
 	effectiveMcpServerConfig,
 	mcpEntryFingerprint,

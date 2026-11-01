@@ -236,6 +236,12 @@ apart from the recorded selection. Run the manager's restart regressions on upgr
   call and on the OpenAI-compatible provider merging `options.headers` into the request. Re-check both
   with `liteLlm.test.ts` (headers reaching a fake proxy) and `e2e/settings-custom-endpoint-litellm.spec.ts`
   (a real chat sending both).
+  The wrapper also replaces the runtime's `getAuth` (fork corporate access): it relies on `prepareRequest`
+  and agent-session auth resolving through `this.getAuth` on the runtime instance, and on an explicit
+  `apiKey` override skipping pi's `!command` execution (`resolveProviderAuth` with
+  `overrides.apiKey`). Per-model `api` / `baseUrl` rely on `models.json` model definitions overriding
+  the provider's. Re-check with `corporate.test.ts` (token cache, policy refusal, Anthropic Messages and
+  Responses routing, proxy and CA) and `e2e/settings-custom-endpoint-corporate.spec.ts`.
 - **Image-only queued input** — [[submodule-server-agent]], queue projection. The host compensates for
   pi's text-only delivered-message removal ([upstream #8612](https://github.com/earendil-works/pi/issues/8612))
   and retains image content lost by the destructive queue API. Remove the corresponding workaround

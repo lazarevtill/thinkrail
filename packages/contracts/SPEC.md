@@ -681,7 +681,15 @@ default, narrow cross-ring guards, and the quit-confirmation rule both clients d
   `isEndpointTag` and bounded by `CUSTOM_ENDPOINT_TAG_LIMITS`), and a draft's `gateway` keeps the saved
   options when omitted and drops them when null. **`customEndpoints.keyStatus`** `{id}` →
   `CustomEndpointKeyStatus | null` (alias, spend, budget, reset and expiry timestamps, rpm/tpm and
-  parallel limits; each null when unreported)) /
+  parallel limits; each null when unreported). Fork, v105 (`CUSTOM_ENDPOINT_CORPORATE_PROTOCOL_VERSION`):
+  a model may carry `api` (`CUSTOM_ENDPOINT_APIS`, checked by `isCustomEndpointApi`; absent or null is
+  chat completions); every endpoint carries `apiKeyReference` (a saved `$VAR` / `!command` key, never a
+  literal), `headers: CustomEndpointHeader[]` (literal values null), `network: CustomEndpointNetwork`
+  and `managed: CustomEndpointManaged | null`; drafts and probe requests take `headers` (a null value
+  keeps the saved one, `isEndpointHeaderName` / `isEndpointHeaderValue`, at most
+  `CUSTOM_ENDPOINT_HEADER_LIMITS.count`) and `network` (`isEndpointProxyUrl`); probe failures add
+  `certificate`. **`organization.policy`** `{}` → `OrganizationPolicy` (`restrictModels`, the managed
+  file in effect, its server count and why part of it couldn't be applied)) /
   **`model.clampThinking`** (pi's
   `clampThinkingLevel` for a `{model, level}` pair — the pre-session picker's effort adjustment, so no
   client re-derives pi's policy) / **`provider.status`**

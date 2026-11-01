@@ -1,11 +1,15 @@
 import {
+	RiCloseLine as Close,
 	RiPlayLine as Play,
 	RiAddLine as Plus,
 	RiSearchLine as Search,
+	RiShieldCheckLine as Shield,
 	RiDeleteBin6Line as Trash2,
 } from "@remixicon/react";
 import {
+	CUSTOM_ENDPOINT_APIS,
 	CUSTOM_ENDPOINT_CONCURRENCY_LIMITS,
+	CUSTOM_ENDPOINT_CORPORATE_PROTOCOL_VERSION,
 	CUSTOM_ENDPOINT_GATEWAY_PROTOCOL_VERSION,
 	CUSTOM_ENDPOINT_LIMITS_PROTOCOL_VERSION,
 	CUSTOM_ENDPOINT_RETRY_LIMITS,
@@ -13,10 +17,13 @@ import {
 	CUSTOM_ENDPOINT_TIMEOUT_LIMITS,
 	CUSTOM_ENDPOINTS_PROTOCOL_VERSION,
 	type CustomEndpoint,
+	type CustomEndpointApi,
 	type CustomEndpointKeyStatus,
 	type CustomEndpointModel,
 	type CustomEndpointTestResult,
 	customEndpointTestBudgetMs,
+	isCustomEndpointApi,
+	type OrganizationPolicy,
 } from "@thinkrail/contracts";
 import { localeOf, type Translator, useT } from "@thinkrail/locales/react";
 import { Button, IconButton } from "@thinkrail/ui/button";
@@ -35,10 +42,12 @@ import { toast, useAppStore } from "@/store";
 import { errorText, getTransport } from "@/transport";
 import { ConfirmDialog } from "./ConfirmDialog";
 import {
+	addHeaderRow,
 	addManualModel,
 	addressMoved,
 	applyPreset,
 	canSave,
+	connectionIssues,
 	draftParams,
 	type EndpointDraft,
 	editEndpointDraft,
@@ -48,8 +57,11 @@ import {
 	limitIssues,
 	mergeProbe,
 	newEndpointDraft,
+	probeExtras,
 	probeFailureText,
 	probeTarget,
+	removeHeaderRow,
+	updateHeaderRow,
 } from "./customEndpointDraft";
 import { SettingsGroup } from "./SettingsGroup";
 import { SettingsSwitch } from "./SettingsSwitch";
@@ -230,6 +242,231 @@ function GatewayFields({
 				) : null}
 			</div>
 		</fieldset>
+	);
+}
+
+function useCorporateSupported(): boolean {
+	const protocolVersion = useAppStore((state) => state.protocolVersion);
+	return protocolVersion !== null && protocolVersion >= CUSTOM_ENDPOINT_CORPORATE_PROTOCOL_VERSION;
+}
+
+function apiLabel(t: Translator, api: CustomEndpointApi): string {
+	switch (api) {
+		case "openai-completions":
+			return t("settings.customEndpoints.api.completions");
+		case "openai-responses":
+			return t("settings.customEndpoints.api.responses");
+		case "anthropic-messages":
+			return t("settings.customEndpoints.api.anthropic");
+	}
+}
+
+function ConnectionFields({
+	draft,
+	disabled,
+	onChange,
+}: {
+	draft: EndpointDraft;
+	disabled: boolean;
+	onChange: (update: (current: EndpointDraft) => EndpointDraft) => void;
+}) {
+	const t = useT();
+	const id = useId();
+	const issues = connectionIssues(draft);
+	return (
+		<fieldset
+			data-testid="custom-endpoints-connection"
+			className="m-0 flex min-w-0 flex-col gap-8 border-0 p-0"
+		>
+			<legend className="mb-4 tr-title-compact text-text-default">
+				{t("settings.customEndpoints.connection.title")}
+			</legend>
+			<span className="tr-text-metadata text-text-muted">
+				{t("settings.customEndpoints.connection.headers")}
+			</span>
+			{draft.headers.map((row) => (
+				<div
+					key={row.key}
+					data-testid="custom-endpoints-header"
+					className="flex items-center gap-8"
+				>
+					<input
+						data-testid="custom-endpoints-header-name"
+						aria-label={t("settings.customEndpoints.connection.headerName")}
+						className={cn(INPUT_CLASS, "tr-code-text")}
+						value={row.name}
+						disabled={disabled}
+						spellCheck={false}
+						placeholder={t("settings.customEndpoints.connection.headerNamePlaceholder")}
+						onChange={(event) => {
+							const name = event.currentTarget.value;
+							onChange((current) => updateHeaderRow(current, row.key, { name }));
+						}}
+					/>
+					<input
+						data-testid="custom-endpoints-header-value"
+						aria-label={t("settings.customEndpoints.connection.headerValue", { name: row.name })}
+						type={row.value.startsWith("$") || row.value.startsWith("!") ? "text" : "password"}
+						autoComplete="new-password"
+						className={cn(INPUT_CLASS, "tr-code-text")}
+						value={row.value}
+						disabled={disabled}
+						spellCheck={false}
+						placeholder={
+							row.saved
+								? t("settings.customEndpoints.apiKeySaved")
+								: t("settings.customEndpoints.connection.headerValuePlaceholder")
+						}
+						onChange={(event) => {
+							const value = event.currentTarget.value;
+							onChange((current) => updateHeaderRow(current, row.key, { value }));
+						}}
+					/>
+					<IconButton
+						icon={Close}
+						label={t("settings.customEndpoints.connection.removeHeader", { name: row.name })}
+						data-testid="custom-endpoints-header-remove"
+						disabled={disabled}
+						onClick={() => onChange((current) => removeHeaderRow(current, row.key))}
+					/>
+				</div>
+			))}
+			<div>
+				<Button
+					variant="outline"
+					size="s"
+					iconLeft={Plus}
+					data-testid="custom-endpoints-header-add"
+					disabled={disabled}
+					onClick={() => onChange(addHeaderRow)}
+				>
+					{t("settings.customEndpoints.connection.addHeader")}
+				</Button>
+			</div>
+			<p className="tr-text-metadata text-text-muted">
+				{t("settings.customEndpoints.connection.headersHint")}
+			</p>
+			{issues.headers ? (
+				<p className="tr-text-metadata text-feedback-error">
+					{t("settings.customEndpoints.connection.headersInvalid")}
+				</p>
+			) : null}
+			<div className="flex items-center gap-8">
+				<span className="flex min-w-0 flex-1 flex-col gap-2">
+					<span className="tr-text-ui text-text-default">
+						{t("settings.customEndpoints.connection.systemCertificates")}
+					</span>
+					<span className="tr-text-metadata text-text-muted">
+						{t("settings.customEndpoints.connection.systemCertificatesHint")}
+					</span>
+				</span>
+				<SettingsSwitch
+					checked={draft.systemCertificates}
+					disabled={disabled}
+					label={t("settings.customEndpoints.connection.systemCertificates")}
+					testId="custom-endpoints-system-certificates"
+					onChange={(systemCertificates) =>
+						onChange((current) => ({ ...current, systemCertificates }))
+					}
+				/>
+			</div>
+			<div className="flex flex-col gap-4">
+				<label htmlFor={`${id}-ca`} className="tr-text-metadata text-text-muted">
+					{t("settings.customEndpoints.connection.caFile")}
+				</label>
+				<input
+					id={`${id}-ca`}
+					data-testid="custom-endpoints-ca-file"
+					className={cn(INPUT_CLASS, "tr-code-text")}
+					value={draft.caFile}
+					disabled={disabled}
+					spellCheck={false}
+					placeholder={t("settings.customEndpoints.connection.caFilePlaceholder")}
+					onChange={(event) => {
+						const caFile = event.currentTarget.value;
+						onChange((current) => ({ ...current, caFile }));
+					}}
+				/>
+			</div>
+			<div className="flex flex-col gap-4">
+				<label htmlFor={`${id}-proxy`} className="tr-text-metadata text-text-muted">
+					{t("settings.customEndpoints.connection.proxy")}
+				</label>
+				<input
+					id={`${id}-proxy`}
+					data-testid="custom-endpoints-proxy"
+					className={cn(INPUT_CLASS, "tr-code-text", issues.proxy && "border-feedback-error")}
+					value={draft.proxy}
+					disabled={disabled}
+					spellCheck={false}
+					aria-invalid={issues.proxy}
+					placeholder={t("settings.customEndpoints.connection.proxyPlaceholder")}
+					onChange={(event) => {
+						const proxy = event.currentTarget.value;
+						onChange((current) => ({ ...current, proxy }));
+					}}
+				/>
+				{issues.proxy ? (
+					<p className="tr-text-metadata text-feedback-error">
+						{t("settings.customEndpoints.connection.proxyInvalid")}
+					</p>
+				) : null}
+			</div>
+		</fieldset>
+	);
+}
+
+function PolicyNotice() {
+	const t = useT();
+	const providerVersion = useAppStore((state) => state.providerVersion);
+	const supported = useCorporateSupported();
+	const [policy, setPolicy] = useState<OrganizationPolicy | null>(null);
+	useEffect(() => {
+		if (!supported) return;
+		let live = true;
+		void getTransport()
+			.request("organization.policy", {})
+			.then((next) => {
+				if (live) setPolicy(next);
+			})
+			.catch(() => {});
+		return () => {
+			live = false;
+		};
+	}, [supported, providerVersion]);
+	if (!policy || (policy.managedServers === 0 && !policy.restrictModels && !policy.error))
+		return null;
+	return (
+		<div
+			data-testid="custom-endpoints-policy"
+			className="flex items-start gap-8 border-border-muted border-b py-12"
+		>
+			<Shield className="mt-2 size-16 shrink-0 text-text-muted" aria-hidden />
+			<div className="flex min-w-0 flex-col gap-2">
+				<span className="tr-text-ui text-text-default">
+					{policy.restrictModels === "managed"
+						? t("settings.customEndpoints.policy.managedOnly")
+						: policy.restrictModels === "custom"
+							? t("settings.customEndpoints.policy.customOnly")
+							: t("settings.customEndpoints.policy.managedServers", {
+									count: policy.managedServers,
+								})}
+				</span>
+				{policy.managedFile ? (
+					<span className="break-all tr-text-metadata text-text-muted">
+						{t("settings.customEndpoints.policy.file", { path: policy.managedFile })}
+					</span>
+				) : null}
+				{policy.error ? (
+					<span
+						data-testid="custom-endpoints-policy-error"
+						className="tr-text-metadata text-feedback-warning"
+					>
+						{t("settings.customEndpoints.policy.error", { error: policy.error })}
+					</span>
+				) : null}
+			</div>
+		</div>
 	);
 }
 
@@ -421,14 +658,24 @@ function EndpointDialog({
 	const limitsSupported = useLimitsSupported();
 	const gatewaySupported = useGatewaySupported();
 	const protocolVersion = useAppStore((state) => state.protocolVersion);
+	const corporateSupported = useCorporateSupported();
 	const [probeKey, setProbeKey] = useState<CustomEndpointKeyStatus | null>(null);
+	const managed = draft.managed;
+	const locked = busy || managed !== null;
+	const keyLocked = busy || managed?.key === true;
+	const modelsLocked = busy || managed?.models === true;
+	const keyIsReference = draft.apiKey.startsWith("!") || draft.apiKey.startsWith("$");
 
 	const detect = useCallback(
 		(current: EndpointDraft) => {
 			setProbing(true);
 			setStatus(null);
 			return getTransport()
-				.request("customEndpoints.probe", { baseUrl: current.baseUrl, ...probeTarget(current) })
+				.request("customEndpoints.probe", {
+					baseUrl: current.baseUrl,
+					...probeExtras(current, protocolVersion),
+					...probeTarget(current),
+				})
 				.then((probe) => {
 					if (!probe.ok) {
 						setStatus({ tone: "error", text: probeFailureText(t, probe) });
@@ -444,7 +691,7 @@ function EndpointDialog({
 				.catch((error: unknown) => setStatus({ tone: "error", text: errorText(error) }))
 				.finally(() => setProbing(false));
 		},
-		[t],
+		[t, protocolVersion],
 	);
 
 	useEffect(() => {
@@ -487,13 +734,24 @@ function EndpointDialog({
 					<DialogDescription>{t("settings.customEndpoints.dialogDescription")}</DialogDescription>
 				</DialogHeader>
 				<div className="-mx-16 flex min-h-0 flex-1 flex-col gap-12 overflow-y-auto px-16">
+					{managed ? (
+						<p
+							data-testid="custom-endpoints-managed-note"
+							className="flex items-start gap-8 tr-text-metadata text-text-muted"
+						>
+							<Shield className="mt-2 size-14 shrink-0" aria-hidden />
+							{managed.key
+								? t("settings.customEndpoints.managed.noteKeyed")
+								: t("settings.customEndpoints.managed.note")}
+						</p>
+					) : null}
 					<Field label={t("settings.customEndpoints.name")} htmlFor={`${id}-name`}>
 						<input
 							id={`${id}-name`}
 							data-testid="custom-endpoints-name"
 							className={INPUT_CLASS}
 							value={draft.name}
-							disabled={busy}
+							disabled={locked}
 							onChange={(event) => setDraft({ ...draft, name: event.currentTarget.value })}
 						/>
 					</Field>
@@ -503,7 +761,7 @@ function EndpointDialog({
 							data-testid="custom-endpoints-url"
 							className={cn(INPUT_CLASS, "tr-code-text")}
 							value={draft.baseUrl}
-							disabled={busy}
+							disabled={locked}
 							spellCheck={false}
 							placeholder={t("settings.customEndpoints.urlPlaceholder")}
 							onChange={(event) => setDraft({ ...draft, baseUrl: event.currentTarget.value })}
@@ -527,7 +785,7 @@ function EndpointDialog({
 									size="s"
 									data-testid="custom-endpoints-preset"
 									data-preset={preset.name}
-									disabled={busy}
+									disabled={locked}
 									selected={draft.baseUrl === preset.baseUrl}
 									onClick={() => setDraft(applyPreset(draft, preset))}
 								>
@@ -541,11 +799,11 @@ function EndpointDialog({
 							<input
 								id={`${id}-key`}
 								data-testid="custom-endpoints-key"
-								type="password"
+								type={keyIsReference ? "text" : "password"}
 								autoComplete="new-password"
-								className={INPUT_CLASS}
+								className={cn(INPUT_CLASS, keyIsReference && "tr-code-text")}
 								value={draft.apiKey}
-								disabled={busy || draft.removeKey}
+								disabled={keyLocked || draft.removeKey}
 								placeholder={
 									draft.removeKey
 										? t("settings.customEndpoints.apiKeyRemoved")
@@ -560,7 +818,7 @@ function EndpointDialog({
 									variant="ghost"
 									size="m"
 									data-testid="custom-endpoints-remove-key"
-									disabled={busy}
+									disabled={keyLocked}
 									selected={draft.removeKey}
 									onClick={() => setDraft({ ...draft, removeKey: !draft.removeKey, apiKey: "" })}
 								>
@@ -570,16 +828,24 @@ function EndpointDialog({
 								</Button>
 							) : null}
 						</div>
+						{corporateSupported ? (
+							<p className="tr-text-metadata text-text-muted">
+								{t("settings.customEndpoints.apiKeyCommandHint")}
+							</p>
+						) : null}
 					</Field>
+					{corporateSupported ? (
+						<ConnectionFields draft={draft} disabled={locked} onChange={setDraft} />
+					) : null}
 					{limitsSupported ? (
-						<LimitFields draft={draft} disabled={busy} onChange={setDraft} />
+						<LimitFields draft={draft} disabled={locked} onChange={setDraft} />
 					) : null}
 					{gatewaySupported && draft.gateway ? (
 						<GatewayFields
 							gateway={draft.gateway}
 							keyStatus={probeKey}
 							invalid={limitIssues(draft).tags}
-							disabled={busy}
+							disabled={locked}
 							onChange={(gateway) => setDraft((current) => ({ ...current, gateway }))}
 						/>
 					) : null}
@@ -594,7 +860,7 @@ function EndpointDialog({
 								iconLeft={Search}
 								loading={probing}
 								data-testid="custom-endpoints-detect"
-								disabled={busy || !draft.baseUrl.trim()}
+								disabled={modelsLocked || !draft.baseUrl.trim()}
 								onClick={() => void detect(draft)}
 							>
 								{t("settings.customEndpoints.detect")}
@@ -624,9 +890,34 @@ function EndpointDialog({
 											</span>
 											<ModelFacts model={model} />
 										</span>
+										{corporateSupported ? (
+											<select
+												data-testid="custom-endpoints-api"
+												aria-label={t("settings.customEndpoints.api.label", { name: model.id })}
+												className="h-28 rounded-sm border border-control-border-default bg-control-bg px-4 tr-text-metadata text-text-default disabled:text-control-disabled-text"
+												value={model.api ?? "openai-completions"}
+												disabled={modelsLocked}
+												onChange={(event) => {
+													const api = event.currentTarget.value;
+													if (!isCustomEndpointApi(api)) return;
+													setDraft((current) => ({
+														...current,
+														models: current.models.map((row) =>
+															row.id === model.id ? { ...row, api } : row,
+														),
+													}));
+												}}
+											>
+												{CUSTOM_ENDPOINT_APIS.map((api) => (
+													<option key={api} value={api}>
+														{apiLabel(t, api)}
+													</option>
+												))}
+											</select>
+										) : null}
 										<SettingsSwitch
 											checked={model.selected}
-											disabled={busy}
+											disabled={modelsLocked}
 											label={t("settings.customEndpoints.use", { name: model.id })}
 											testId="custom-endpoints-use"
 											onChange={(selected) =>
@@ -648,7 +939,7 @@ function EndpointDialog({
 								aria-label={t("settings.customEndpoints.manualLabel")}
 								className={cn(INPUT_CLASS, "tr-code-text")}
 								value={manualId}
-								disabled={busy}
+								disabled={modelsLocked}
 								spellCheck={false}
 								placeholder={t("settings.customEndpoints.manualPlaceholder")}
 								onChange={(event) => setManualId(event.currentTarget.value)}
@@ -663,7 +954,7 @@ function EndpointDialog({
 								size="m"
 								iconLeft={Plus}
 								data-testid="custom-endpoints-manual-add"
-								disabled={busy || !manualId.trim()}
+								disabled={modelsLocked || !manualId.trim()}
 								onClick={addManual}
 							>
 								{t("common.add")}
@@ -889,6 +1180,7 @@ export function CustomEndpointsSettings({
 			description={t("settings.customEndpoints.description")}
 			testId="settings-custom-endpoints"
 		>
+			<PolicyNotice />
 			{failed ? (
 				<div className="flex items-center gap-8 border-border-muted border-b py-12" role="alert">
 					<p className="tr-text-ui text-text-muted">{t("settings.customEndpoints.loadFailed")}</p>
@@ -907,7 +1199,18 @@ export function CustomEndpointsSettings({
 					>
 						<div className="flex items-center gap-8">
 							<div className="flex min-w-0 flex-1 flex-col gap-2">
-								<span className="truncate tr-text-ui text-text-default">{endpoint.name}</span>
+								<span className="flex min-w-0 items-center gap-8">
+									<span className="truncate tr-text-ui text-text-default">{endpoint.name}</span>
+									{endpoint.managed ? (
+										<span
+											data-testid="custom-endpoints-managed"
+											className="inline-flex shrink-0 items-center gap-4 tr-text-metadata text-text-muted"
+										>
+											<Shield className="size-12" aria-hidden />
+											{t("settings.customEndpoints.managed.badge")}
+										</span>
+									) : null}
+								</span>
 								<span
 									className="truncate tr-text-metadata text-text-muted"
 									title={endpoint.baseUrl}
@@ -918,6 +1221,14 @@ export function CustomEndpointsSettings({
 									})}
 									{limitsSupported ? ` · ${limitsSummary(t, endpoint)}` : null}
 								</span>
+								{endpoint.managed && !endpoint.hasApiKey ? (
+									<span
+										data-testid="custom-endpoints-needs-key"
+										className="tr-text-metadata text-feedback-warning"
+									>
+										{t("settings.customEndpoints.managed.needsKey")}
+									</span>
+								) : null}
 								{endpoint.gateway ? <EndpointKeyStatus endpoint={endpoint} /> : null}
 							</div>
 							<Button
@@ -929,12 +1240,14 @@ export function CustomEndpointsSettings({
 							>
 								{t("common.edit")}
 							</Button>
-							<IconButton
-								icon={Trash2}
-								label={t("settings.customEndpoints.removeLabel", { name: endpoint.name })}
-								data-testid="custom-endpoints-remove"
-								onClick={() => setRemoving(endpoint)}
-							/>
+							{endpoint.managed ? null : (
+								<IconButton
+									icon={Trash2}
+									label={t("settings.customEndpoints.removeLabel", { name: endpoint.name })}
+									data-testid="custom-endpoints-remove"
+									onClick={() => setRemoving(endpoint)}
+								/>
+							)}
 						</div>
 						{limitsSupported ? (
 							<ul className="flex flex-col">

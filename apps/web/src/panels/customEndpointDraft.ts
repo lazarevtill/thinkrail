@@ -1,15 +1,23 @@
 import {
+	CUSTOM_ENDPOINT_CORPORATE_PROTOCOL_VERSION,
 	CUSTOM_ENDPOINT_GATEWAY_PROTOCOL_VERSION,
+	CUSTOM_ENDPOINT_HEADER_LIMITS,
 	CUSTOM_ENDPOINT_LIMITS_PROTOCOL_VERSION,
 	CUSTOM_ENDPOINT_TAG_LIMITS,
 	type CustomEndpoint,
 	type CustomEndpointDraft,
 	type CustomEndpointGateway,
+	type CustomEndpointHeader,
 	type CustomEndpointKeyStatus,
 	type CustomEndpointLimits,
+	type CustomEndpointManaged,
 	type CustomEndpointModel,
+	type CustomEndpointNetwork,
 	type CustomEndpointProbe,
 	isEndpointConcurrency,
+	isEndpointHeaderName,
+	isEndpointHeaderValue,
+	isEndpointProxyUrl,
 	isEndpointRetries,
 	isEndpointTag,
 	isEndpointTimeoutSeconds,
@@ -27,6 +35,16 @@ export interface GatewayDraft {
 
 export const DEFAULT_GATEWAY_TAGS = "thinkrail";
 
+export interface HeaderRow {
+	key: number;
+	name: string;
+	value: string;
+	/** The host keeps a value for this header; an empty field keeps it. */
+	saved: boolean;
+	/** The saved `$VAR` reference the field starts with; while it still shows it, nothing was typed. */
+	reference: string | null;
+}
+
 export interface EndpointDraft {
 	id?: string;
 	name: string;
@@ -39,6 +57,13 @@ export interface EndpointDraft {
 	timeoutText: string;
 	retriesText: string;
 	gateway: GatewayDraft | null;
+	/** Fork: the saved key when it's a `$VAR` or `!command`; while the field still shows it, nothing was typed. */
+	savedKeyReference: string | null;
+	headers: HeaderRow[];
+	systemCertificates: boolean;
+	caFile: string;
+	proxy: string;
+	managed: CustomEndpointManaged | null;
 	models: EndpointModelRow[];
 }
 
@@ -106,6 +131,72 @@ export function draftLimits(draft: EndpointDraft): CustomEndpointLimits {
 	};
 }
 
+let nextHeaderKey = 1;
+
+function headerRow(name = "", reference: string | null = null, saved = false): HeaderRow {
+	return { key: nextHeaderKey++, name, value: reference ?? "", saved, reference };
+}
+
+export function addHeaderRow(draft: EndpointDraft): EndpointDraft {
+	return { ...draft, headers: [...draft.headers, headerRow()] };
+}
+
+export function updateHeaderRow(
+	draft: EndpointDraft,
+	key: number,
+	patch: Partial<Pick<HeaderRow, "name" | "value">>,
+): EndpointDraft {
+	return {
+		...draft,
+		headers: draft.headers.map((row) => (row.key === key ? { ...row, ...patch } : row)),
+	};
+}
+
+export function removeHeaderRow(draft: EndpointDraft, key: number): EndpointDraft {
+	return { ...draft, headers: draft.headers.filter((row) => row.key !== key) };
+}
+
+export interface ConnectionIssues {
+	headers: boolean;
+	proxy: boolean;
+}
+
+export function connectionIssues(draft: EndpointDraft): ConnectionIssues {
+	const names = new Set<string>();
+	const headers =
+		draft.headers.length > CUSTOM_ENDPOINT_HEADER_LIMITS.count ||
+		draft.headers.some((row) => {
+			const name = row.name.trim();
+			const duplicate = names.has(name.toLowerCase());
+			names.add(name.toLowerCase());
+			const valueMissing = row.value.trim() === "" && !row.saved;
+			const value = row.value.trim();
+			return (
+				duplicate ||
+				!isEndpointHeaderName(name) ||
+				valueMissing ||
+				(value !== "" && (!isEndpointHeaderValue(value) || value.startsWith("!")))
+			);
+		});
+	return { headers, proxy: draft.proxy.trim() !== "" && !isEndpointProxyUrl(draft.proxy.trim()) };
+}
+
+export function draftHeaders(draft: EndpointDraft): CustomEndpointHeader[] {
+	return draft.headers.map((row) => {
+		const value = row.value.trim();
+		const kept = row.saved && (value === "" || value === row.reference);
+		return { name: row.name.trim(), value: kept ? null : value };
+	});
+}
+
+export function draftNetwork(draft: EndpointDraft): CustomEndpointNetwork {
+	return {
+		systemCertificates: draft.systemCertificates,
+		caFile: draft.caFile.trim() || null,
+		proxy: draft.proxy.trim() || null,
+	};
+}
+
 export function newEndpointDraft(): EndpointDraft {
 	return {
 		name: "",
@@ -118,6 +209,12 @@ export function newEndpointDraft(): EndpointDraft {
 		timeoutText: "",
 		retriesText: "",
 		gateway: null,
+		savedKeyReference: null,
+		headers: [],
+		systemCertificates: false,
+		caFile: "",
+		proxy: "",
+		managed: null,
 		models: [],
 	};
 }
@@ -127,7 +224,7 @@ export function editEndpointDraft(endpoint: CustomEndpoint): EndpointDraft {
 		id: endpoint.id,
 		name: endpoint.name,
 		baseUrl: endpoint.baseUrl,
-		apiKey: "",
+		apiKey: endpoint.apiKeyReference ?? "",
 		hasSavedKey: endpoint.hasApiKey,
 		removeKey: false,
 		savedBaseUrl: endpoint.baseUrl,
@@ -140,6 +237,12 @@ export function editEndpointDraft(endpoint: CustomEndpoint): EndpointDraft {
 					tagsText: endpoint.gateway.tags.join(", "),
 				}
 			: null,
+		savedKeyReference: endpoint.apiKeyReference,
+		headers: endpoint.headers.map((header) => headerRow(header.name, header.value, true)),
+		systemCertificates: endpoint.network.systemCertificates,
+		caFile: endpoint.network.caFile ?? "",
+		proxy: endpoint.network.proxy ?? "",
+		managed: endpoint.managed,
 		models: endpoint.models.map((model) => ({ ...model, selected: true })),
 	};
 }
@@ -176,6 +279,10 @@ function withCost(cost: CustomEndpointModel["cost"]): Pick<CustomEndpointModel, 
 	return cost ? { cost } : {};
 }
 
+function withApi(api: CustomEndpointModel["api"]): Pick<CustomEndpointModel, "api"> {
+	return api === undefined ? {} : { api };
+}
+
 export function mergeProbe(
 	draft: EndpointDraft,
 	probe: Extract<CustomEndpointProbe, { ok: true }>,
@@ -185,8 +292,9 @@ export function mergeProbe(
 	const found: EndpointModelRow[] = probe.models.map((model) => {
 		const previous = known.get(model.id);
 		if (!previous) return { ...model, selected: firstDetect };
+		const { api: _suggested, ...reported } = model;
 		return {
-			...model,
+			...reported,
 			contextWindow: model.contextWindow ?? previous.contextWindow,
 			maxTokens:
 				model.contextWindow === null ? (model.maxTokens ?? previous.maxTokens) : model.maxTokens,
@@ -194,6 +302,7 @@ export function mergeProbe(
 			vision: model.vision ?? previous.vision,
 			chatTemplateThinking: model.chatTemplateThinking ?? previous.chatTemplateThinking,
 			...withCost(model.cost ?? previous.cost),
+			...withApi(previous.api),
 			selected: previous.selected,
 		};
 	});
@@ -212,10 +321,28 @@ export function mergeProbe(
 	return { ...draft, baseUrl, gateway, concurrencyText, models: [...found, ...kept] };
 }
 
+function keyTyped(draft: EndpointDraft): boolean {
+	const key = draft.apiKey.trim();
+	return key !== "" && key !== draft.savedKeyReference;
+}
+
 export function probeTarget(draft: EndpointDraft): { apiKey?: string; endpointId?: string } {
 	if (draft.removeKey) return {};
-	if (draft.apiKey.trim() || !draft.id) return { apiKey: draft.apiKey };
+	if (keyTyped(draft) || !draft.id) return { apiKey: draft.apiKey };
 	return { endpointId: draft.id };
+}
+
+/** Fork: the headers and network settings Detect sends; saved header values stay on the host. */
+export function probeExtras(
+	draft: EndpointDraft,
+	protocolVersion: number | null,
+): { endpointId?: string; headers?: CustomEndpointHeader[]; network?: CustomEndpointNetwork } {
+	if ((protocolVersion ?? 0) < CUSTOM_ENDPOINT_CORPORATE_PROTOCOL_VERSION) return {};
+	return {
+		...(draft.id ? { endpointId: draft.id } : {}),
+		headers: draftHeaders(draft),
+		network: draftNetwork(draft),
+	};
 }
 
 export function draftParams(
@@ -233,9 +360,16 @@ export function draftParams(
 		...(version >= CUSTOM_ENDPOINT_GATEWAY_PROTOCOL_VERSION
 			? { gateway: draftGateway(draft) }
 			: {}),
+		...(version >= CUSTOM_ENDPOINT_CORPORATE_PROTOCOL_VERSION
+			? { headers: draftHeaders(draft), network: draftNetwork(draft) }
+			: {}),
 		models: draft.models
 			.filter((model) => model.selected)
-			.map(({ selected: _selected, ...model }) => model),
+			.map(({ selected: _selected, api, ...model }) =>
+				version >= CUSTOM_ENDPOINT_CORPORATE_PROTOCOL_VERSION
+					? { ...model, ...withApi(api) }
+					: model,
+			),
 	};
 }
 
@@ -253,7 +387,10 @@ export function addressMoved(draft: EndpointDraft): boolean {
 
 export function canSave(draft: EndpointDraft): boolean {
 	const issues = limitIssues(draft);
+	const connection = connectionIssues(draft);
 	return (
+		!connection.headers &&
+		!connection.proxy &&
 		!addressMoved(draft) &&
 		!issues.concurrency &&
 		!issues.timeout &&
@@ -279,6 +416,8 @@ export function probeFailureText(t: Translator, failure: ProbeFailure): string {
 			return t("settings.customEndpoints.failure.unreachable");
 		case "no-models":
 			return t("settings.customEndpoints.failure.noModels");
+		case "certificate":
+			return t("settings.customEndpoints.failure.certificate");
 		case "not-openai":
 			return failure.status === undefined
 				? t("settings.customEndpoints.failure.notOpenai")

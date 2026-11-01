@@ -818,7 +818,15 @@ a project picker, the prompt hero, and the reused
   and comma-separated **Tags** (default `thinkrail`, invalid tags disable Save) — and an empty
   Parallel requests field takes the key's `max_parallel_requests`. A gateway endpoint row re-reads
   `customEndpoints.keyStatus` and shows spend of budget, reset, rate limits and expiry, in warning tone
-  at 90% of the budget or within a week of expiry (`keyAlerts` in `customEndpointDraft`); and
+  at 90% of the budget or within a week of expiry (`keyAlerts` in `customEndpointDraft`). Fork, from
+  v105: the key field shows a saved `$VAR` / `!command` (only a changed one counts as typed, so an edit's
+  automatic Detect doesn't run a command the host hasn't trusted) with a hint on SSO commands; a
+  **Connection** fieldset edits headers (saved secret values show as "Saved", empty keeps them), **Trust
+  system certificates**, a CA file and a proxy (invalid headers or proxy disable Save); each model row
+  has an API select; a managed server shows a **Managed** badge, a "needs your key" hint and no Remove,
+  and its dialog locks every field the organization sets; `organization.policy` drives a notice at the
+  top of the group (restriction, managed file, apply errors). Rules live in `customEndpointDraft`
+  (`connectionIssues`, `draftHeaders`, `draftNetwork`, `probeExtras`); and
   the **`JetBrainsAiCard`** — route Central-supported models through the user's JetBrains subscription while
   keeping ThinkRail's embedded PI — a state machine over the typed `JbcentralStatus` +
   `provider.jbcentral*`: absent (official host-OS install guidance + Recheck), outdated — below the host's

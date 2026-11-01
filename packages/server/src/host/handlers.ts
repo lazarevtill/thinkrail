@@ -56,6 +56,7 @@ import {
 	markWorkspaceUnread,
 	notifyExtUi,
 	nudgeSession,
+	organizationPolicy,
 	probeCustomEndpoint,
 	projectTrustSummary,
 	promptSession,
@@ -82,6 +83,7 @@ import {
 	stopAllSubagents,
 	stopBackgroundCommand,
 	stopSubagent,
+	syncManagedEndpoints,
 	testCustomEndpoint,
 } from "../agent";
 import {
@@ -1279,6 +1281,10 @@ const handlers: WsHandlers = {
 	"customEndpoints.remove": (p) => removeCustomEndpoint(p.id),
 	"customEndpoints.test": (p) => testCustomEndpoint(p.id, p.modelId),
 	"customEndpoints.keyStatus": (p) => customEndpointKeyStatus(p.id),
+	"organization.policy": async () => {
+		await syncManagedEndpoints().catch(() => {});
+		return organizationPolicy();
+	},
 	"model.default": () =>
 		observeSetupRead(
 			() => resolveNewChatModel({}),
