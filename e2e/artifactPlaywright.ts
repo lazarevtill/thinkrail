@@ -13,6 +13,7 @@ import {
 	E2E_FAKE_BIN_DIR,
 	E2E_HOME_DIR,
 	E2E_INSTALLED_FONTS,
+	E2E_MANAGED_CONFIG,
 	E2E_PI_AGENT_DIR,
 	E2E_PICK_DIR_POINTER,
 } from "./fixtures/paths";
@@ -24,6 +25,7 @@ export function artifactHostEnvironment(cacheDir: string): Record<string, string
 	}
 	return {
 		THINKRAIL_DATA_DIR: E2E_DATA_DIR,
+		THINKRAIL_MANAGED_CONFIG: E2E_MANAGED_CONFIG,
 		XDG_CACHE_HOME: cacheDir,
 		THINKRAIL_PICK_DIR: E2E_PICK_DIR_POINTER,
 		THINKRAIL_INSTALLED_FONTS: E2E_INSTALLED_FONTS,
