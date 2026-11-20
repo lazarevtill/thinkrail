@@ -45,7 +45,8 @@
 	"overrides": {
 		"dompurify": "3.4.17",
 		"react": "catalog:",
-		"react-dom": "catalog:"
+		"react-dom": "catalog:",
+		"undici": "8.12.3"
 	},
 	"type": "module",
 	"scripts": {
